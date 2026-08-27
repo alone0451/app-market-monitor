@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}应用发布监测{% endblock %}</title>
+<style>
+  :root{--ink:#162033;--muted:#687386;--line:#e4e8ef;--soft:#f5f7fa;--brand:#215ca0;
+    --brand-dark:#174577;--green:#15735d;--amber:#a15c08;--red:#b53333;--blue-soft:#edf5ff}
+  *{box-sizing:border-box}html,body{margin:0;min-height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    background:#f4f6f9;color:var(--ink);font-size:14px;line-height:1.6}
+  .topbar{height:64px;background:#fff;border-bottom:1px solid var(--line);display:flex;align-items:center;
+    padding:0 32px;position:sticky;top:0;z-index:20}
+  .brand{display:flex;align-items:center;gap:11px;font-size:16px;font-weight:700;white-space:nowrap}
+  .brand-mark{width:32px;height:32px;border-radius:9px;background:linear-gradient(145deg,#3379c7,#174577);
+    color:#fff;display:grid;place-items:center;font-size:17px;box-shadow:0 5px 14px rgba(33,92,160,.22)}
+  .nav{display:flex;gap:6px;margin-left:40px;height:100%;align-items:center}
+  .nav a{color:#5d687a;text-decoration:none;padding:9px 14px;border-radius:7px;font-weight:500}
+  .nav a:hover{background:var(--soft);color:var(--ink)}.nav a.active{background:#eaf2fb;color:var(--brand)}
+  .top-status{margin-left:auto;color:var(--muted);font-size:12px;display:flex;align-items:center;gap:7px}
+  .status-dot{width:8px;height:8px;background:#39a67e;border-radius:50%;box-shadow:0 0 0 4px #e5f5ef}
+  .wrap{max-width:1200px;margin:0 auto;padding:30px 28px 56px}
+  .page-head{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:22px}
+  h1{font-size:26px;line-height:1.3;margin:0 0 7px;letter-spacing:-.3px}h2{font-size:17px;margin:0 0 5px}
+  h3{font-size:14px;margin:0}.sub,.muted{color:var(--muted)}.sub{margin:0;font-size:13px;max-width:760px}.small{font-size:12px;color:var(--muted)}
+  .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin:14px 0;
+    box-shadow:0 2px 8px rgba(24,42,72,.035)}
+  .card-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:16px}
+  .section-index{width:27px;height:27px;border-radius:8px;background:#eaf2fb;color:var(--brand);display:grid;
+    place-items:center;font-weight:700;font-size:12px;flex:none}
+  .section-title{display:flex;align-items:flex-start;gap:11px}.section-title p{margin:2px 0 0}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.grid.two{grid-template-columns:1fr 1fr}
+  .stat{background:#fff;border:1px solid var(--line);border-radius:11px;padding:17px 18px}.stat .n{font-size:28px;font-weight:700;line-height:1.2}
+  .stat .l{color:var(--muted);font-size:12px;margin-top:4px}.stat.warn .n{color:var(--amber)}.stat.bad .n{color:var(--red)}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:var(--brand);color:#fff;border:1px solid var(--brand);
+    border-radius:8px;padding:9px 16px;font-family:inherit;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;white-space:nowrap}
+  .btn:hover{background:var(--brand-dark)}.btn.ghost{background:#fff;color:var(--brand);border-color:#bad0e8}.btn.soft{background:#edf5ff;color:var(--brand);border-color:#d7e7f8}
+  .btn.danger{background:#fff;color:var(--red);border-color:#ecc1c1}.btn:disabled{opacity:.48;cursor:not-allowed}
+  input,select,textarea{width:100%;font:13px inherit;padding:9px 11px;border:1px solid #cfd6e0;border-radius:8px;background:#fff;color:var(--ink);outline:none}
+  input:focus,select:focus,textarea:focus{border-color:#6c9ed1;box-shadow:0 0 0 3px #eaf2fb}label{display:block;font-size:12px;color:#596578;margin:0 0 5px;font-weight:600}
+  table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;background:#f7f8fa;color:#5c6779;padding:10px 12px;font-size:12px;font-weight:600;border-bottom:1px solid var(--line)}
+  td{padding:12px;border-bottom:1px solid #edf0f4;vertical-align:top}tr:last-child td{border-bottom:0}
+  .tag{display:inline-flex;align-items:center;font-size:11.5px;padding:2px 8px;border-radius:999px;margin:2px 3px 2px 0;white-space:nowrap}
+  .t-ok{background:#e7f5ef;color:#11644f}.t-bad{background:#fdecec;color:#a52d2d}.t-warn,.t-amber{background:#fff1dc;color:#8a510d}.t-info{background:#eaf2fb;color:#18598e}.t-gray{background:#eef0f3;color:#667085}
+  .mono{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:11.5px}.flash{background:#e8f6f1;border:1px solid #b5dfd1;color:#12644f;border-radius:9px;padding:10px 14px;margin-bottom:16px}
+  .segmented{display:inline-flex;background:#f0f2f5;padding:3px;border-radius:9px;gap:2px}.segmented label{margin:0;padding:6px 13px;border-radius:7px;color:#667085;cursor:pointer}
+  .segmented input{display:none}.segmented label:has(input:checked){background:#fff;color:var(--brand);box-shadow:0 1px 4px rgba(0,0,0,.08)}
+  .searchbar{display:grid;grid-template-columns:1fr auto;gap:9px;margin-top:13px}.searchbar input{font-size:14px;padding:11px 13px}
+  .callout{background:#f4f8fd;border:1px solid #d8e6f5;border-radius:9px;padding:12px 14px}.callout.warn{background:#fff9ef;border-color:#f0d9ae}
+  .candidate-grid,.target-list{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:13px}.candidate,.target{border:1px solid var(--line);border-radius:10px;padding:14px;background:#fff}
+  .candidate{display:flex;justify-content:space-between;gap:14px;align-items:center}.candidate b,.target b{font-size:14px}.target-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+  .target-meta{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}.field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}.actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+  .market-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}.market-item{border:1px solid var(--line);border-radius:10px;padding:12px 13px;display:flex;align-items:center;gap:10px;cursor:pointer;margin:0;color:var(--ink)}
+  .market-item input{width:17px;height:17px}.market-item>span:nth-child(2){flex:1}.market-item small{display:block;color:var(--muted);font-weight:400}
+  details.advanced{border-top:1px solid var(--line);margin-top:16px;padding-top:13px}details.advanced summary{cursor:pointer;color:#546174;font-size:12px;font-weight:600}
+  .report-app{padding:0;overflow:hidden}.report-title{padding:17px 20px;display:flex;justify-content:space-between;gap:16px;align-items:center;border-bottom:1px solid var(--line)}
+  .report-title-main{display:flex;align-items:center;gap:12px}.app-icon{width:38px;height:38px;background:#edf4fc;border-radius:10px;color:var(--brand);display:grid;place-items:center;font-weight:700}
+  .report-summary{display:flex;gap:22px;align-items:center;text-align:right}.report-summary strong{display:block;font-size:16px}.riskline{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
+  .empty{text-align:center;padding:44px 20px;color:var(--muted)}.empty b{display:block;color:var(--ink);margin-bottom:4px}.inline-note{font-size:12px;color:var(--muted);margin-left:8px}
+  .toast{position:fixed;right:24px;bottom:24px;background:#162033;color:#fff;padding:10px 15px;border-radius:9px;box-shadow:0 8px 30px rgba(0,0,0,.2);display:none;z-index:50}
+  @media(max-width:900px){.grid{grid-template-columns:1fr 1fr}.market-grid{grid-template-columns:1fr 1fr}.candidate-grid,.target-list{grid-template-columns:1fr}.top-status{display:none}}
+  @media(max-width:680px){.topbar{height:auto;min-height:58px;padding:10px 14px;flex-wrap:wrap}.nav{order:3;width:100%;margin:7px 0 0;overflow:auto;height:auto}.nav a{padding:7px 10px}.wrap{padding:20px 14px 40px}.page-head,.card-head{flex-direction:column}.grid,.grid.two,.field-row,.market-grid{grid-template-columns:1fr}.searchbar{grid-template-columns:1fr}.report-title{align-items:flex-start}.report-summary{display:none}.card{padding:17px}.candidate{align-items:flex-start;flex-direction:column}}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="brand-mark">巡</span><span>应用发布监测</span></div>
+  <nav class="nav">
+    <a href="/" class="{{ 'active' if request.path == '/' else '' }}">总览</a>
+    <a href="/config" class="{{ 'active' if request.path in ('/config','/apps','/settings','/wizard') else '' }}">监测配置</a>
+    <a href="/results" class="{{ 'active' if request.path == '/results' else '' }}">巡检报表</a>
+  </nav>
+  <div class="top-status"><span class="status-dot"></span>本地运行 · 数据不出电脑</div>
+</header>
+<main class="wrap">
+  {% with msgs = get_flashed_messages() %}{% if msgs %}<div class="flash">{% for m in msgs %}{{ m }}<br>{% endfor %}</div>{% endif %}{% endwith %}
+  {% block content %}{% endblock %}
+</main>
+<div id="toast" class="toast"></div>
+<script>
+function toast(message){const el=document.getElementById('toast');el.textContent=message;el.style.display='block';clearTimeout(window.__toast);window.__toast=setTimeout(()=>el.style.display='none',2400)}
+function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+</script>
+</body>
+</html>

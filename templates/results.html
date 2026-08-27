@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}巡检报表 · 应用发布监测{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>应用市场巡检报表</h1><p class="sub">覆盖 Android 与 iOS；重新巡检会沿用已保存配置并保留历史记录，不会清空监测清单。</p></div>
+  <div class="actions"><a class="btn ghost" href="/api/report/markdown">导出报表</a><a class="btn ghost" href="/config">调整配置</a><button class="btn" id="report-run" title="沿用当前保存的配置" onclick="runAgain()">按当前配置重新巡检</button></div>
+</div>
+
+<div class="grid">
+  <div class="stat"><div class="n">{{ stats.apps }}</div><div class="l">监测应用</div></div>
+  <div class="stat"><div class="n">{{ stats.collected }}</div><div class="l">已发现渠道记录</div></div>
+  <div class="stat {% if stats.inconsistent %}warn{% endif %}"><div class="n">{{ stats.inconsistent }}</div><div class="l">同平台版本不一致的 App</div></div>
+  <div class="stat {% if stats.suspicious %}bad{% endif %}"><div class="n">{{ stats.suspicious }}</div><div class="l">高风险 / 严重风险项</div></div>
+</div>
+
+<div id="run-progress" class="callout" style="display:none;margin-top:14px"><b>正在巡检</b><div id="run-progress-text" class="small">准备查询应用市场…</div></div>
+
+{% if not apps %}
+<section class="card empty"><b>还没有可生成报表的监测对象</b><span>请先配置 App 名称或公司名称。</span><div style="margin-top:15px"><a class="btn" href="/config">前往监测配置</a></div></section>
+{% else %}
+{% for a in apps %}{% set report=app_reports[a.id] %}
+<section class="card report-app">
+  <div class="report-title">
+    <div class="report-title-main"><span class="app-icon">{{ a.app_name[:1] }}</span><div><h2>{{ a.app_name }} <span class="tag t-info">{{ report.platform_name }}</span></h2><div class="small">{{ a.company_name or '开发者待确认' }}{% if a.platform=='ios' and (a.ios_bundle_id or a.ios_app_id) %} · <span class="mono">{{ a.ios_bundle_id or ('App Store ID ' ~ a.ios_app_id) }}</span>{% elif a.package_name %} · <span class="mono">{{ a.package_name }}</span>{% endif %}</div>
+      <div class="riskline">
+        {% if report.suspicious_count %}<span class="tag t-bad">发现 {{ report.suspicious_count }} 个高风险项</span>{% endif %}
+        {% if report.warning_count %}<span class="tag t-warn">{{ report.warning_count }} 个版本或数据提醒</span>{% endif %}
+        {% if report.inconsistent %}<span class="tag t-warn">同平台渠道版本不一致</span>{% elif report.online_count %}<span class="tag t-ok">同平台版本当前一致</span>{% endif %}
+        {% if report.has_change %}<span class="tag t-info">本轮有版本变化</span>{% endif %}
+        {% if not report.online_count %}<span class="tag {% if report.coverage_state=='issue' %}t-warn{% else %}t-gray{% endif %}">{{ report.coverage_text }}</span>{% endif %}
+      </div></div></div>
+    <div class="report-summary">{% for pv in report.platform_versions %}<div><span class="small">{{ pv.name }} 版本</span><strong>{{ pv.version }}</strong></div>{% endfor %}<div><span class="small">发现渠道</span><strong>{{ report.online_count }} / {{ report.market_count }}</strong></div></div>
+  </div>
+  <div style="overflow:auto">
+    <table>
+      <thead><tr><th>应用市场</th><th>监测版本</th><th>版本发布时间</th><th>公司主体</th><th>监测状态</th><th>风险结论</th><th>发布标记</th><th>监测时间 / 证据 / 安装包</th></tr></thead>
+      <tbody>{% for m in markets if m.platform==a.platform %}{% set r=result_map.get((m.id,a.id)) %}{% set authority=auth_map.get((a.id,m.id),'unknown') %}{% set artifact=artifact_map.get((m.id,a.id)) %}
+      {% set artifact_cap=artifact_capabilities.get((m.id,a.id),{}) %}
+      <tr>
+        <td><b>{{ m.name }}</b><div class="small">{% if m.platform=='ios' %}iOS{% else %}Android{% endif %} · {% if m.adapter in ('huawei','xiaomi','yyb','samsung','baidu','meizu','appstore','qihu360') %}网页自动采集{% else %}USB 手机客户端采集{% endif %}</div></td>
+        <td>{% if r and r.status=='ok' %}<b style="font-size:15px">{{ r.version_name or '—' }}</b>{% if r.version_code %}<div class="small">版本代码 {{ r.version_code }}</div>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
+        <td style="white-space:nowrap">{% if r and r.status=='ok' %}<span>{{ r.published_at or '市场未提供' }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+        <td>{% if r and r.status=='ok' %}
+          <div class="small"><b>开发者/发布者：</b>{{ r.developer_name or '市场未提供' }}</div>
+          <div class="small" style="margin-top:4px"><b>运营者/主办者：</b>{{ r.operator_name or '市场未提供' }}</div>
+          {% else %}<span class="muted">—</span>{% endif %}</td>
+        <td>
+          {% if r and r.status=='ok' %}<span class="tag t-ok">已发现</span>
+          {% elif r and r.status=='package_mismatch' %}<span class="tag t-bad">发现同名错包应用</span>
+          {% elif r and r.status in ('not_published','offline') %}<span class="tag t-gray">未发现</span>
+          {% elif r and r.status=='web_limited' %}<span class="tag t-warn">查询受限</span>
+          {% elif r and r.status=='device_unavailable' %}<span class="tag t-warn">未完成：手机未连接</span>
+          {% elif r and r.status=='market_app_missing' %}<span class="tag t-warn">未完成：市场未安装</span>
+          {% elif r and r.status=='login_required' %}<span class="tag t-warn">未完成：需登录或授权</span>
+          {% elif r and r.status=='need_review' %}<span class="tag t-warn">待确认</span>
+          {% elif r and r.status=='need_adapt' %}<span class="tag t-gray">未完成：采集能力待接入</span>
+          {% elif r %}<span class="tag t-bad">查询失败</span>
+          {% else %}<span class="tag t-gray">尚未巡检</span>{% endif %}
+          {% if r and r.version_changed %}<span class="tag t-info">由 {{ r.previous_version or '未知' }} 更新</span>{% endif %}
+          <div style="margin-top:7px"><button class="btn ghost" style="padding:5px 9px" onclick='retryMarket({{ m.id|tojson }},{{ a.id }},this)'>{% if r %}单独重试{% else %}单独查询{% endif %}</button></div>
+        </td>
+        <td>{% if r and r.computed_risk_level=='critical' %}<span class="tag t-bad">严重：疑似仿冒/错包</span>
+          {% elif r and r.computed_risk_level=='high' %}<span class="tag t-bad">高风险：禁止安装</span>
+          {% elif r and r.computed_risk_level=='warning' %}<span class="tag t-warn">提醒：需核实</span>
+          {% elif r and r.status=='ok' %}<span class="tag t-ok">未发现直接异常</span>
+          {% else %}<span class="tag t-gray">证据不足</span>{% endif %}
+          {% if r and r.computed_risk_reason %}<div class="small" style="margin-top:5px">{{ r.computed_risk_reason }}</div>{% endif %}
+          {% if r and r.observed_package %}<div class="small mono">市场包名：{{ r.observed_package }}</div>{% endif %}
+        </td>
+        <td>{% if authority=='official' %}<span class="tag t-ok">已授权发布</span>{% elif authority=='third_party' %}<span class="tag t-bad">非授权发布</span>{% else %}<span class="tag t-gray">未确定</span>{% endif %}</td>
+        <td>{% if r %}<div class="small"><b>监测时间：</b>{{ r.checked_at or '未记录' }}</div>{% if r.detail %}<div class="small" title="{{ r.detail }}"><b>采集证据：</b>{{ r.detail[:80] }}</div>{% endif %}{% if r.screenshot_url %}<a class="small" href="{{ r.screenshot_url }}" target="_blank">查看现场截图</a>{% endif %}{% else %}<span class="small">尚未巡检</span>{% endif %}
+          {% if artifact %}<div class="callout" style="margin-top:7px;padding:8px">
+            <div class="small"><b>最新安装包校验：</b>{{ artifact.created_at }}</div>
+            <div class="small">大小：{{ '%.2f'|format(artifact.file_size / 1048576) }} MB · 包名：<span class="mono">{{ artifact.package_name or '未解析' }}</span> · 版本：{{ artifact.version_name or '未解析' }}</div>
+            <div class="small mono" style="word-break:break-all">SHA-256：{{ artifact.sha256 }}</div>
+            {% if artifact.sig_fingerprint %}<div class="small mono" style="word-break:break-all">签名指纹：{{ artifact.sig_fingerprint }}</div>{% endif %}
+            <div class="small"><b>系统结论：</b>{{ artifact.conclusion }}</div>
+            <div class="small mono" style="word-break:break-all"><b>电脑保存位置：</b>{{ artifact.local_path }}</div>
+            {% if artifact.risk_level not in ('critical','high') %}<a class="btn soft" style="margin-top:6px;padding:5px 9px" href="/api/artifacts/{{ artifact.id }}/file">下载已校验 APK</a>{% endif %}
+          </div>{% endif %}
+          {% if m.platform=='android' %}<div style="margin-top:7px">
+            {% if artifact_cap.method in ('direct','device') %}<button class="btn soft" style="padding:5px 9px" title="{{ artifact_cap.detail }}" onclick='acquireArtifact({{ m.id|tojson }},{{ a.id }},{{ artifact_cap.method|tojson }},this)'>{{ artifact_cap.label }}</button>{% endif %}
+            <div class="small">{{ artifact_cap.detail }}</div>
+            <div id="artifact-status-{{ m.id }}-{{ a.id }}" class="small" style="display:none;margin-top:6px;padding:7px 9px;border-radius:7px;background:#f4f8fd"></div>
+          </div>{% elif r and r.source_url %}<div style="margin-top:7px"><a class="btn soft" style="padding:5px 9px" href="{{ r.source_url }}" target="_blank" rel="noopener">打开 App Store 官方页面</a><div class="small">Apple 不公开 IPA 直接下载，系统不会伪造安装包链接。</div></div>{% endif %}
+        </td>
+      </tr>{% endfor %}</tbody>
+    </table>
+  </div>
+</section>
+{% endfor %}
+<div class="actions" style="justify-content:flex-end"><span class="small">每行只展示当前真实可用的安装包操作；网页下载支持分段与断点续传，从手机提取要求实体手机已安装目标 App。两种方式都会校验包名、版本、SHA-256 和签名，高风险包不提供下载。</span><a class="btn ghost" href="/config#channel-authority">维护发布渠道标记</a></div>
+{% endif %}
+
+<script>
+function runAgain(){const btn=document.getElementById('report-run');btn.disabled=true;btn.textContent='正在启动…';fetch('/api/check/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({trigger:'manual'})}).then(r=>r.json()).then(d=>{if(!d.ok){btn.disabled=false;btn.textContent='按当前配置重新巡检';toast(d.msg);return}pollRun(d.run_id)})}
+function pollRun(id,options={}){
+  const box=document.getElementById('run-progress'),text=document.getElementById('run-progress-text');
+  box.style.display='block';
+  fetch('/api/check/status/'+id).then(r=>r.json()).then(d=>{
+    if(!d.ok)throw new Error(d.msg||'无法读取任务状态');
+    const s=d.summary||{};
+    if(d.run.status==='running'){
+      if(options.artifact){
+        const got=(s.downloaded_bytes||0)/1048576,total=(s.expected_bytes||0)/1048576;
+        const mode=s.download_mode==='parallel'?'4 路分段下载':(s.download_mode==='resume'?'断点续传':'下载');
+        text.textContent=options.method==='device'
+          ? '正在从已连接手机提取目标应用并校验…'
+          : (got
+            ? `正在${mode}：${got.toFixed(1)} MB${total?' / '+total.toFixed(1)+' MB':''}；完成后自动校验包名、版本、哈希和签名…`
+            : '正在刷新官方下载地址…');
+        if(s.save_dir)text.textContent+=`（电脑保存目录：${s.save_dir}）`;
+        if(options.inline)options.inline.textContent=text.textContent;
+      }else{
+        text.textContent=options.single
+          ? `正在单独查询 ${options.marketName||'该渠道'}…`
+          : `已完成 ${s.completed||0} / ${s.total||0} 个渠道查询`;
+      }
+      setTimeout(()=>pollRun(id,options),1200);return;
+    }
+    if(options.artifact){
+      const item=(s.items||[])[0]||{};
+      box.querySelector('b').textContent=item.status==='ok'?'安装包校验完成':(item.status==='risk'?'发现安装包风险':'未能安全获取安装包');
+      text.textContent=item.detail||s.error||'任务未返回详细原因';
+      if(options.inline){
+        options.inline.style.display='block';options.inline.textContent=text.textContent;
+        if(s.save_dir){options.inline.append(document.createElement('br'),`电脑保存目录：${s.save_dir}`);}
+        if(item.download_file_url){
+          const link=document.createElement('a');link.href=item.download_file_url;
+          link.textContent='下载已校验 APK';link.className='btn soft';
+          link.style.cssText='margin-top:6px;padding:5px 9px';
+          options.inline.append(document.createElement('br'),link);
+        }
+      }
+      if(options.button){options.button.disabled=false;options.button.textContent=options.originalText;}
+      return;
+    }
+    box.querySelector('b').textContent=options.single?'单渠道查询完成':'巡检完成';text.textContent='正在刷新报表…';
+    setTimeout(()=>location.href='/results',500);
+  }).catch(e=>{
+    box.querySelector('b').textContent='任务状态读取失败';text.textContent=e.message||'请稍后重试';
+    if(options.inline){options.inline.style.display='block';options.inline.textContent=text.textContent;}
+    if(options.button){options.button.disabled=false;options.button.textContent=options.originalText;}
+  });
+}
+function retryMarket(marketId,appId,btn){const originalText=btn.textContent;btn.disabled=true;btn.textContent='查询中…';fetch('/api/check/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({app_ids:[appId],market_ids:[marketId]})}).then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok||!d.ok)throw new Error(d.msg||'单渠道查询启动失败');pollRun(d.run_id,{single:true,marketName:marketId,button:btn,originalText})}).catch(e=>{btn.disabled=false;btn.textContent=originalText;toast(e.message||'单渠道查询启动失败')})}
+function acquireArtifact(marketId,appId,method,btn){const box=document.getElementById('run-progress'),text=document.getElementById('run-progress-text'),originalText=btn.textContent,inline=document.getElementById(`artifact-status-${marketId}-${appId}`);btn.disabled=true;btn.textContent='正在安全检查…';inline.style.display='block';inline.textContent=method==='device'?'正在确认手机上的目标应用…':'正在检查已有制品和官方下载地址…';box.style.display='block';box.querySelector('b').textContent='准备获取安装包';text.textContent=inline.textContent;fetch('/api/artifacts/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({market_id:marketId,app_id:appId,method})}).then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok||!d.ok)throw new Error(d.msg||'安装包任务启动失败');pollRun(d.run_id,{artifact:true,method,button:btn,originalText,inline})}).catch(e=>{btn.disabled=false;btn.textContent=originalText;box.querySelector('b').textContent='安装包任务未启动';text.textContent=e.message||'请稍后重试';inline.textContent=text.textContent})}
+const runId=new URLSearchParams(location.search).get('run');if(runId)pollRun(runId);
+</script>
+{% endblock %}

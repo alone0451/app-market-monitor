@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}设置 · 应用市场版本巡检{% endblock %}
+{% block content %}
+<h1>设置</h1>
+<p class="sub">手机渠道复核引导与渠道勾选。渠道权威性在「巡检结果」页按 App×渠道标记。</p>
+
+<div class="card">
+  <h2>USB 手机渠道复核（可选）</h2>
+  <p class="small">仅检查 ADB、手机连接和已安装的应用市场客户端。它用于手机端读取详情和截图，不会自动下载或安装目标 App。</p>
+  <div id="env-wizard" style="margin-top:12px">
+    <div style="margin-bottom:12px">
+      <button class="btn" onclick="runEnvCheck()" id="env-btn">开始检测</button>
+      <span id="env-hint" class="small" style="margin-left:10px"></span>
+    </div>
+    <div id="env-steps"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>渠道</h2>
+  <p class="small">六个渠道可直接网页查询；OPPO、vivo、荣耀通过 USB 手机客户端采集。</p>
+  <table>
+    <tr><th style="width:60px">启用</th><th>渠道</th><th>采集器状态</th></tr>
+    {% for m in markets %}
+    <tr>
+      <td><input type="checkbox" data-mk-enabled="{{ m['id'] }}" {% if m['enabled'] %}checked{% endif %}></td>
+      <td>{{ m['name'] }}<div class="small mono">{{ m['id'] }}</div></td>
+      <td>
+        {% if m['adapter'] in ('huawei','xiaomi','yyb','samsung','baidu','meizu','appstore','qihu360') %}<span class="tag t-ok">网页采集</span>
+        {% else %}<span class="tag t-info">USB 手机采集</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <button class="btn" style="margin-top:12px" onclick="saveMarkets()">保存渠道配置</button>
+</div>
+
+<script>
+function saveMarkets(){
+  const markets = [];
+  document.querySelectorAll('input[data-mk-enabled]').forEach(cb => {
+    markets.push({id: cb.dataset.mkEnabled, enabled: cb.checked});
+  });
+  fetch('/api/markets', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({markets})}).then(r=>r.json()).then(d=>{
+      document.getElementById('set-msg').textContent = '渠道配置已保存'; });
+}
+function runEnvCheck(){
+  const btn = document.getElementById('env-btn');
+  btn.disabled = true;
+  document.getElementById('env-hint').textContent = '检测中…';
+  fetch('/api/env/check').then(r=>r.json()).then(d=>{
+    const box = document.getElementById('env-steps');
+    box.innerHTML = '';
+    d.steps.forEach(s => {
+      const color = s.status==='ok' ? '#3B6D11' : (s.status==='warn' ? '#854F0B' : '#A32D2D');
+      const bg = s.status==='ok' ? '#EAF3DE' : (s.status==='warn' ? '#FAEEDA' : '#FCEBEB');
+      const icon = s.status==='ok' ? '✓' : (s.status==='warn' ? '!' : '✗');
+      let html = `<div style="border:1px solid #e3e6ea;border-left:4px solid ${color};background:${bg};
+          border-radius:8px;padding:10px 14px;margin:8px 0">
+          <b style="color:${color}">${icon} ${s.name}</b>
+          <div class="small" style="margin-top:3px">${s.message}</div>`;
+      if (s.actions && s.actions.length){
+        html += '<ul class="small" style="margin:6px 0 0 18px;color:#6b7280">';
+        s.actions.forEach(a => html += `<li>${a}</li>`);
+        html += '</ul>';
+      }
+      html += '</div>';
+      box.innerHTML += html;
+    });
+    document.getElementById('env-hint').textContent = d.phone_ready ? '手机已连接，可按客户端清单复核 ✓' :
+      (d.web_ready ? '网页巡检已就绪；手机复核环境仍有待处理项' : '存在待处理项，按提示操作后重试');
+    btn.disabled = false;
+  }).catch(e => {
+    document.getElementById('env-hint').textContent = '检测失败: ' + e;
+    btn.disabled = false;
+  });
+}
+</script>
+{% endblock %}

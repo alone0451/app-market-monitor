@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}新建监测 · 应用市场版本巡检{% endblock %}
+{% block content %}
+<h1>新建监测任务</h1>
+<p class="sub">先用自然语言找到正确的 App，再查各市场版本；缺少稳定网页数据的渠道可连接手机复核详情。</p>
+
+<div class="stepper" id="stepper"></div>
+<div id="wiz-root" style="max-width:900px"></div>
+
+<script>
+const markets = {{ markets | tojson }};
+let apps = {{ apps | tojson }};
+let candidates = [];
+let currentQuery = '';
+let step = 0;
+const steps = [
+  ['确认监测对象','输入 App 名称或公司名称，由系统查找候选并让你确认。'],
+  ['选择应用市场','先启用能按包名稳定查询的渠道；其他渠道可在接入旧手机后逐个开启。'],
+  ['准备真机','网页渠道不要求手机；OPPO、vivo、荣耀等渠道可用 USB 手机客户端复核。'],
+  ['首次巡检','先查版本，再根据结果决定是否下载。']
+];
+const packageReady = new Set(['huawei','xiaomi','yyb','samsung','baidu','meizu','appstore','qihu360']);
+
+function esc(value){
+  return String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+}
+function drawStepper(){
+  document.getElementById('stepper').innerHTML = steps.map((s,i)=>`
+    <div class="step-dot ${i===step?'active':''} ${i<step?'done':''}">
+      <span>${i<step?'✓':i+1}</span><b>${s[0]}</b>
+    </div>`).join('');
+}
+function render(){
+  drawStepper();
+  const root = document.getElementById('wiz-root');
+  const [title,desc] = steps[step];
+  let body = step===0 ? renderDiscovery() : step===1 ? renderMarkets() : step===2 ? renderDevice() : renderRun();
+  root.innerHTML = `<div class="card wizard-card"><h2>${step+1}. ${title}</h2><p class="small">${desc}</p>
+    <div class="wizard-body">${body}</div>
+    <div class="wizard-nav">
+      <button class="btn ghost" ${step===0?'disabled':''} onclick="go(${step-1})">上一步</button>
+      ${step<3?`<button class="btn" onclick="nextStep()">下一步</button>`:''}
+    </div></div>`;
+  if(step===0) renderKnownApps();
+}
+
+function renderDiscovery(){
+  return `<div class="callout"><b>你只需要先提供一个名称</b><div class="small">例如“示例金融”或“示例科技”。系统会展示应用名、开发者和 Android 包名，确认后再加入监测。</div></div>
+    <div class="search-row">
+      <input id="query" value="${esc(currentQuery)}" placeholder="输入 App 名称或公司名称" onkeydown="if(event.key==='Enter') searchApps()">
+      <button class="btn" id="search-btn" onclick="searchApps()">查询候选</button>
+    </div>
+    <div id="search-msg" class="small"></div><div id="candidate-list"></div>
+    <details class="manual-box"><summary>已知 Android 包名，直接添加</summary>
+      <div class="manual-grid"><input id="manual-name" placeholder="应用名称"><input id="manual-pkg" placeholder="如 com.example.app"><button class="btn ghost" onclick="addManual()">添加</button></div>
+    </details>
+    <h2>当前监测清单</h2><div id="known-apps"></div>`;
+}
+function renderKnownApps(){
+  const box=document.getElementById('known-apps'); if(!box) return;
+  box.innerHTML = apps.length ? apps.map(a=>`<div class="known-app"><div><b>${esc(a.app_name)}</b><div class="small mono">${esc(a.package_name||'尚未确认包名')}</div></div>
+    <span class="tag ${a.package_name?'t-ok':'t-warn'}">${a.package_name?'已确认':'待确认'}</span></div>`).join('') : '<p class="small">尚未添加监测对象。</p>';
+}
+function searchApps(){
+  const query=document.getElementById('query').value.trim(); currentQuery=query;
+  const btn=document.getElementById('search-btn'), msg=document.getElementById('search-msg');
+  if(query.length<2){msg.textContent='请输入至少 2 个字符';return;}
+  btn.disabled=true; msg.textContent='正在应用市场查询候选…'; document.getElementById('candidate-list').innerHTML='';
+  fetch('/api/discovery/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query})})
+    .then(async r=>({status:r.status,data:await r.json()})).then(({data})=>{
+      btn.disabled=false; if(!data.ok){msg.textContent=data.msg||'查询失败';return;}
+      candidates=data.candidates||[];
+      msg.textContent=candidates.length?`找到 ${candidates.length} 个候选，请核对开发者和包名`:'没有找到可确认的候选，可换公司全称或直接填写包名';
+      document.getElementById('candidate-list').innerHTML=candidates.map((c,i)=>`<div class="candidate">
+        <div><b>${esc(c.app_name)}</b><div>${esc(c.developer||'开发者未提供')}</div><div class="small mono">${esc(c.package_name)}</div>
+        <div class="small">${c.matches.map(m=>`${esc(m.market_name||'未知应用市场')} ${esc(m.version_name||'版本未知')}`).join(' · ')}</div></div>
+        <button class="btn ghost" onclick="confirmCandidate(${i},this)">确认监测</button></div>`).join('');
+    }).catch(e=>{btn.disabled=false;msg.textContent='查询失败：'+e;});
+}
+function refreshApps(){return fetch('/api/results').then(r=>r.json()).then(d=>{apps=d.apps;renderKnownApps();});}
+function confirmCandidate(index,btn){
+  btn.disabled=true; const c=candidates[index];
+  fetch('/api/apps/from-discovery',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...c,query:currentQuery})})
+    .then(r=>r.json()).then(d=>{if(!d.ok){btn.disabled=false;alert(d.msg);return;} btn.textContent=d.resolved_pending?'已确认 ✓':(d.existing?'已在清单':'已添加 ✓');refreshApps();});
+}
+function addManual(){
+  const app_name=document.getElementById('manual-name').value.trim(), package_name=document.getElementById('manual-pkg').value.trim();
+  fetch('/api/apps',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({app_name,package_name})})
+    .then(r=>r.json()).then(d=>{if(!d.ok){alert(d.msg);return;}refreshApps();});
+}
+
+function renderMarkets(){
+  return `<div class="market-list">${markets.map(m=>`<label class="market-choice">
+    <input type="checkbox" data-market="${esc(m.id)}" ${m.enabled?'checked':''}>
+    <span><b>${esc(m.name)}</b><small>${packageReady.has(m.id)?'网页按包名查询 · 推荐':'需要市场 ID 或 USB 手机 · 暂不推荐首轮'}</small></span>
+    <span class="tag ${packageReady.has(m.id)?'t-ok':'t-gray'}">${packageReady.has(m.id)?'可用':'待接入'}</span></label>`).join('')}</div>
+    <div id="market-msg" class="small"></div>`;
+}
+function saveMarkets(){
+  const items=[...document.querySelectorAll('[data-market]')].map(x=>({id:x.dataset.market,enabled:x.checked}));
+  items.forEach(item=>{const market=markets.find(m=>m.id===item.id);if(market)market.enabled=item.enabled;});
+  return fetch('/api/markets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({markets:items})}).then(r=>r.json());
+}
+
+function renderDevice(){
+  return `<div class="callout"><b>USB 手机渠道复核（可选）</b><div class="small">用于打开已安装的市场客户端、读取应用详情并截图留证；不会自动下载或安装目标 App，网页版本巡检也不需要连接手机。</div></div>
+    <div class="search-row"><button class="btn" id="env-btn" onclick="runEnv()">检测手机与市场客户端</button></div>
+    <div id="device-msg" class="small"></div><div id="env-list"></div>
+    <p class="small">现在没有连接手机也可以继续完成网页版本巡检；系统需要下载时会明确提示。</p>`;
+}
+function runEnv(){
+  const btn=document.getElementById('env-btn');btn.disabled=true;document.getElementById('device-msg').textContent='检测中…';
+  fetch('/api/env/check').then(r=>r.json()).then(d=>{
+    btn.disabled=false;document.getElementById('device-msg').textContent=d.phone_ready?'手机已连接，可按客户端清单复核':'网页巡检已就绪；手机复核环境仍有待处理项';
+    document.getElementById('env-list').innerHTML=d.steps.map(s=>`<div class="env-item ${esc(s.status)}"><b>${esc(s.name)}</b><div class="small">${esc(s.message)}</div>${(s.actions||[]).map(a=>`<div class="small">· ${esc(a)}</div>`).join('')}</div>`).join('');
+  });
+}
+
+function renderRun(){
+  const confirmed=apps.filter(a=>a.package_name);
+  return `<div class="review"><div><span>${confirmed.length}</span><small>已确认 App</small></div><div><span>${markets.filter(m=>m.enabled).length}</span><small>已选渠道</small></div></div>
+    ${confirmed.length?'':'<div class="callout warn">还没有确认包名的 App，请返回第一步添加。</div>'}
+    <div class="run-panel"><b>首次只查询版本信息</b><p class="small">查询结束后，结果页会把下载动作分为“不需要 / 可选 / 建议 / 必须”。</p>
+      <button class="btn" id="run-btn" ${confirmed.length?'':'disabled'} onclick="runCheck()">开始首次巡检</button><span id="run-msg" class="small"></span></div>`;
+}
+function runCheck(){
+  const btn=document.getElementById('run-btn');btn.disabled=true;document.getElementById('run-msg').textContent=' 正在查询…';
+  fetch('/api/check/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({trigger:'manual'})}).then(r=>r.json()).then(d=>{
+    if(!d.ok){btn.disabled=false;document.getElementById('run-msg').textContent=d.msg;return;}
+    const poll=()=>fetch('/api/check/status/'+d.run_id).then(r=>r.json()).then(x=>{
+      const s=x.summary||{};document.getElementById('run-msg').textContent=` 已完成 ${s.completed||0}/${s.total||0}`;
+      if(x.run.status==='running')setTimeout(poll,1200);else location.href='/results';
+    });poll();
+  });
+}
+function nextStep(){
+  if(step===0 && !apps.some(a=>a.package_name)){alert('请先确认至少一个带 Android 包名的 App');return;}
+  if(step===1){saveMarkets().then(()=>{step++;render();});return;}
+  step++;render();
+}
+function go(target){step=Math.max(0,Math.min(3,target));render();}
+render();
+</script>
+{% endblock %}

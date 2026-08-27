@@ -1,0 +1,4 @@
+Flask>=3.0,<4
+httpx>=0.27
+beautifulsoup4>=4.12
+PyYAML>=6.0

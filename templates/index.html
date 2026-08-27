@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}总览 · 应用发布监测{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>应用发布风险总览</h1><p class="sub">关注公司 App 在各市场的版本一致性、非预期发布和疑似假冒情况。</p></div>
+  <div class="actions"><a class="btn ghost" href="/config">调整监测范围</a><button class="btn" id="run-btn" title="使用已保存的监测清单和市场范围；不会清空配置" onclick="runCheck()">开始巡检</button></div>
+</div>
+
+<div class="grid">
+  <div class="stat"><div class="n">{{ snapshot.stats.apps }}</div><div class="l">监测应用</div></div>
+  <div class="stat"><div class="n">{{ snapshot.stats.collected }}</div><div class="l">已采集渠道记录</div></div>
+  <div class="stat {% if snapshot.stats.inconsistent %}warn{% endif %}"><div class="n">{{ snapshot.stats.inconsistent }}</div><div class="l">同平台版本不一致的 App</div></div>
+  <div class="stat {% if snapshot.stats.suspicious %}bad{% endif %}"><div class="n">{{ snapshot.stats.suspicious }}</div><div class="l">疑似非授权 / 包体异常</div></div>
+</div>
+
+{% if snapshot.stats.apps == 0 %}
+<section class="card empty"><b>先配置需要监测的 App 或公司</b><span>不需要事先知道包名，系统会通过应用名称或公司名称查找候选。</span><div style="margin-top:15px"><a class="btn" href="/config">开始配置</a></div></section>
+{% else %}
+<section class="card">
+  <div class="card-head"><div><h2>资产健康状态</h2><p class="small">按 App 汇总当前已采集渠道的最新版本和风险信号。</p></div><a class="btn soft" href="/results">打开完整报表</a></div>
+  <table>
+    <thead><tr><th>App</th><th>最新版本</th><th>已发现渠道</th><th>版本一致性</th><th>风险</th></tr></thead>
+    <tbody>{% for a in snapshot.apps %}{% set report=snapshot.app_reports[a.id] %}
+      <tr><td><b>{{ a.app_name }}</b> <span class="tag t-info">{{ report.platform_name }}</span><div class="small">{{ a.company_name or a.ios_bundle_id or a.package_name or '识别信息待完善' }}</div></td>
+        <td>{% if report.platform_versions %}{% for pv in report.platform_versions %}<span class="tag t-info">{{ pv.name }} {{ pv.version }}</span>{% endfor %}{% else %}—{% endif %}</td><td>{{ report.online_count }} / {{ report.market_count }}</td>
+        <td>{% if report.inconsistent %}<span class="tag t-warn">同平台存在版本差异</span>{% elif report.online_count %}<span class="tag t-ok">同平台当前一致</span>{% else %}<span class="tag t-gray">暂无数据</span>{% endif %}</td>
+        <td>{% if report.suspicious_count %}<span class="tag t-bad">{{ report.suspicious_count }} 个风险项</span>{% elif report.has_change %}<span class="tag t-info">发现版本更新</span>{% else %}<span class="tag t-ok">未发现异常</span>{% endif %}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+</section>
+{% endif %}
+
+<section class="card">
+  <div class="card-head"><div><h2>最近一次巡检</h2><p class="small">{{ now }}</p></div>
+    {% if last_run %}{% if last_run.status=='running' %}<span class="tag t-info">进行中</span>{% elif last_run.status=='done' %}<span class="tag t-ok">已完成</span>{% elif last_run.status=='partial' %}<span class="tag t-warn">部分结果需复核</span>{% else %}<span class="tag t-bad">运行失败</span>{% endif %}{% endif %}</div>
+  {% if last_run %}<div class="grid two"><div class="callout"><span class="small">开始时间</span><div><b>{{ last_run.started_at }}</b></div></div><div class="callout"><span class="small">完成时间</span><div><b>{{ last_run.finished_at or '正在采集…' }}</b></div></div></div>
+  {% else %}<div class="empty">尚未运行过巡检。</div>{% endif %}
+  <div id="run-hint" class="small" style="margin-top:11px"></div>
+</section>
+
+<script>
+function runCheck(){
+  const btn=document.getElementById('run-btn');
+  {% if snapshot.stats.apps == 0 %}toast('请先配置监测对象');return;{% endif %}
+  btn.disabled=true;btn.textContent='正在启动…';document.getElementById('run-hint').textContent='正在查询各应用市场，请稍候。';
+  fetch('/api/check/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({trigger:'manual'})}).then(r=>r.json()).then(d=>{if(!d.ok){btn.disabled=false;btn.textContent='开始巡检';toast(d.msg);return}pollRun(d.run_id)})
+}
+function pollRun(id){fetch('/api/check/status/'+id).then(r=>r.json()).then(d=>{const s=d.summary||{};document.getElementById('run-hint').textContent=`已完成 ${s.completed||0} / ${s.total||0}`;if(d.run.status==='running')setTimeout(()=>pollRun(id),1200);else location.href='/results'})}
+</script>
+{% endblock %}

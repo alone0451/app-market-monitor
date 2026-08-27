@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block title %}监测配置 · 应用发布监测{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>监测配置</h1>
+    <p class="sub">告诉系统要关注哪个 App 或哪家公司。系统负责查找包名和各市场版本；包名只作为可选的精确识别条件。</p>
+  </div>
+  <div class="actions"><a class="btn ghost" href="/results">查看已有报表</a></div>
+</div>
+
+<section class="card">
+  <div class="card-head">
+    <div class="section-title"><span class="section-index">1</span><div><h2>要监测什么</h2><p class="small">输入常用名称即可；按公司搜索时，可以一次选择多个旗下 App。</p></div></div>
+  </div>
+  <div class="segmented">
+    <label><input type="radio" name="search-type" value="app" checked onchange="switchSearchType()">App 名称</label>
+    <label><input type="radio" name="search-type" value="company" onchange="switchSearchType()">公司名称</label>
+  </div>
+  <div class="searchbar">
+    <input id="search-query" placeholder="例如：示例金融" onkeydown="if(event.key==='Enter')searchApps()">
+    <button class="btn" id="search-btn" onclick="searchApps()">查找应用</button>
+  </div>
+  <div id="search-hint" class="small" style="margin-top:7px">系统会从已接入的应用市场查找候选，你只需核对应用名称和开发者。</div>
+  <div id="candidate-list" class="candidate-grid"></div>
+  <div id="candidate-pager" class="actions" style="display:none;justify-content:center;margin-top:14px">
+    <button type="button" class="btn ghost" id="candidate-prev" onclick="changeCandidatePage(-1)">上一页</button>
+    <span id="candidate-page-info" class="small"></span>
+    <button type="button" class="btn ghost" id="candidate-next" onclick="changeCandidatePage(1)">下一页</button>
+  </div>
+
+  <details class="advanced">
+    <summary>已知准确信息，手工添加（可选）</summary>
+    <div class="field-row" style="margin-top:12px">
+      <div><label>App 名称 *</label><input id="manual-name" placeholder="例如：示例金融"></div>
+      <div><label>公司名称</label><input id="manual-company" placeholder="用于辅助识别开发者"></div>
+      <div><label>Android 包名</label><input id="manual-package" class="mono" placeholder="可留空，例如 com.example.app"></div>
+      <div><label>备注</label><input id="manual-note" placeholder="可选"></div>
+    </div>
+    <button class="btn ghost" style="margin-top:11px" onclick="addManual()">加入监测清单</button>
+  </details>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <div class="section-title"><span class="section-index">2</span><div><h2>当前监测清单</h2><p class="small">这些是公司关心的应用资产。系统在后台使用包名精确匹配，你日常不需要维护它。</p></div></div>
+    <span class="tag t-info" id="target-count">{{ apps|length }} 个应用</span>
+  </div>
+  <div class="actions" id="run-scope-controls" style="margin-bottom:11px;{% if not apps %}display:none{% endif %}">
+    <button type="button" class="btn soft" onclick="selectRunTargets(true)">本轮全选</button>
+    <button type="button" class="btn ghost" onclick="selectRunTargets(false)">本轮清空</button>
+    <span id="run-scope-msg" class="small"></span>
+  </div>
+  <div class="target-list" id="target-list" style="{% if not apps %}display:none{% endif %}">
+    {% for a in apps %}
+    <article class="target">
+      <div class="target-head">
+        <div><b>{{ a['app_name'] }}</b><div class="small">{{ a['company_name'] or '公司信息待确认' }}</div></div>
+        <div class="actions">
+          <label style="margin:0;display:flex;align-items:center;gap:5px;font-weight:400;white-space:nowrap">
+            <input type="checkbox" class="run-target" data-app-id="{{ a['id'] }}" data-platform="{{ a['platform'] }}" style="width:auto"
+                   {% if (a['platform']=='android' and (a['package_name'] or a['search_keywords'])) or (a['platform']=='ios' and (a['ios_bundle_id'] or a['ios_app_id'])) %}checked{% else %}disabled{% endif %}
+                   onchange="updateRunScope()">
+            {% if (a['platform']=='android' and (a['package_name'] or a['search_keywords'])) or (a['platform']=='ios' and (a['ios_bundle_id'] or a['ios_app_id'])) %}本轮巡检{% else %}先确认身份{% endif %}
+          </label>
+          <button type="button" class="btn danger remove-app"
+                  style="padding:5px 9px" data-app-id="{{ a['id'] }}">移除</button>
+        </div>
+      </div>
+      <div class="target-meta">
+        <span class="tag t-info">{{ 'iOS' if a['platform']=='ios' else 'Android' }}</span>
+        {% if a['platform']=='ios' and (a['ios_bundle_id'] or a['ios_app_id']) %}<span class="tag t-gray mono">{{ a['ios_bundle_id'] or ('App Store ID ' ~ a['ios_app_id']) }}</span><span class="tag t-ok">已精确识别</span>
+        {% elif a['package_name'] %}<span class="tag t-gray mono">{{ a['package_name'] }}</span><span class="tag t-ok">已精确识别</span>
+        {% else %}<span class="tag t-warn">等待确认候选</span>{% endif %}
+        {% if a['discovery_query'] %}<span class="tag t-info">来源：{{ a['discovery_query'] }}</span>{% endif %}
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  <div class="empty" id="target-empty" style="{% if apps %}display:none{% endif %}"><b>还没有监测对象</b>先在上方输入 App 名称或公司名称。</div>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <div class="section-title"><span class="section-index">3</span><div><h2>监测哪些应用市场</h2><p class="small">市场按操作系统分开配置，只会把同平台的 App 和市场组合成巡检任务。</p></div></div>
+  </div>
+  <div class="actions" id="market-scope-controls" style="margin-bottom:11px">
+    <button type="button" class="btn soft" onclick="selectAllMarkets(true)">本次全选</button>
+    <button type="button" class="btn ghost" onclick="selectAllMarkets(false)">本次清空</button>
+    <span id="market-scope-msg" class="small"></span>
+  </div>
+  <div id="android-market-section" class="callout" style="margin-bottom:12px">
+    <h3>Android 应用市场</h3>
+    <p class="small" style="margin:4px 0 11px">覆盖主流安卓厂商和第三方市场；需要手机的渠道会明确标注。</p>
+    <div class="market-grid">
+    {% for m in markets if m['platform']=='android' %}
+    <label class="market-item">
+      <input type="checkbox" data-market="{{ m['id'] }}" data-platform="{{ m['platform'] }}" {% if m['enabled'] %}checked{% endif %} onchange="updateRunScope()">
+      <span><b>{{ m['name'] }}</b>
+        <small>{% if m['adapter'] in ('huawei','yyb','baidu','meizu','qihu360') %}支持名称搜索和版本采集{% elif m['adapter'] in ('xiaomi','samsung') %}已知包名后网页采集{% else %}USB 手机客户端采集{% endif %}</small>
+      </span>
+      {% if m['adapter'] in ('huawei','yyb','baidu','meizu','qihu360') %}<span class="tag t-ok">名称可搜</span>{% elif m['adapter'] in ('xiaomi','samsung') %}<span class="tag t-info">包名查版本</span>{% else %}<span class="tag t-info">需连接手机</span>{% endif %}
+    </label>
+    {% endfor %}
+    </div>
+  </div>
+  <div id="ios-market-section" class="callout" style="margin-bottom:12px;{% if 'ios' not in app_platforms %}display:none{% endif %}">
+    <h3>iOS 应用市场</h3>
+    <p class="small" style="margin:4px 0 11px">只有搜索结果或监测清单中存在 iOS 应用时才显示。</p>
+    <div class="market-grid">
+    {% for m in markets if m['platform']=='ios' %}
+    <label class="market-item">
+      <input type="checkbox" data-market="{{ m['id'] }}" data-platform="{{ m['platform'] }}" {% if m['enabled'] %}checked{% endif %} onchange="updateRunScope()">
+      <span><b>{{ m['name'] }}</b><small>支持 iOS 名称搜索和版本采集</small></span>
+      <span class="tag t-ok">名称可搜</span>
+    </label>
+    {% endfor %}
+    </div>
+  </div>
+  <div id="ios-market-placeholder" class="small" style="margin:-2px 0 12px;{% if 'ios' in app_platforms %}display:none{% endif %}">当前只有 Android 监测对象，因此暂不显示 iOS 市场。搜索到 iOS 候选后，Apple App Store 会自动出现。</div>
+  <div class="actions" style="margin-top:13px"><button class="btn ghost" onclick="saveMarkets()">保存市场范围</button><span id="market-msg" class="small"></span></div>
+</section>
+
+<section class="card" id="channel-authority">
+  <div class="card-head">
+    <div class="section-title"><span class="section-index">4</span><div><h2>发布渠道标记</h2><p class="small">如果明确知道某个 App 应由哪些渠道发布，可以标记；不确定就保持“未确定”，不会阻塞巡检。</p></div></div>
+    <span class="tag t-gray">可选</span>
+  </div>
+  {% if apps %}
+  <div style="overflow:auto">
+    <table>
+      <thead><tr><th>App / 平台</th><th>发布渠道标记</th></tr></thead>
+      <tbody>{% for a in apps %}<tr><td><b>{{ a['app_name'] }}</b><div><span class="tag t-info">{{ 'iOS' if a['platform']=='ios' else 'Android' }}</span></div></td>
+        <td><div class="actions">{% for m in markets if m['enabled'] and m['platform']==a['platform'] %}
+        {% set b = bindings|selectattr('app_id','equalto',a['id'])|selectattr('market_id','equalto',m['id'])|first %}
+        <label style="min-width:150px"><span class="small">{{ m['name'] }}</span><select class="authority" data-app="{{ a['id'] }}" data-market="{{ m['id'] }}" style="min-width:116px">
+          <option value="unknown" {% if not b or b['authority']=='unknown' %}selected{% endif %}>未确定</option>
+          <option value="official" {% if b and b['authority']=='official' %}selected{% endif %}>已授权发布</option>
+          <option value="third_party" {% if b and b['authority']=='third_party' %}selected{% endif %}>非授权发布</option>
+        </select></label>{% endfor %}</div></td>
+      </tr>{% endfor %}</tbody>
+    </table>
+  </div>
+  <div class="actions" style="margin-top:12px"><button class="btn ghost" onclick="saveAuthority()">保存渠道标记</button><span id="authority-msg" class="small"></span></div>
+  {% else %}<div class="empty">添加监测对象后，可在这里标记发布渠道。</div>{% endif %}
+</section>
+
+<section class="card">
+  <details class="advanced" style="border:0;margin:0;padding:0">
+    <summary>USB 手机渠道复核（可选）</summary>
+    <div style="margin-top:15px">
+      <div class="callout"><h3>USB 手机渠道复核</h3><p class="small" style="margin:5px 0 9px">用于 OPPO、vivo、荣耀等缺少稳定网页数据的渠道，在已安装对应市场客户端的手机上读取详情并截图留证。不会自动下载或安装目标 App；网页查询和网页 APK 的哈希、签名校验均不依赖手机。</p><button class="btn soft" id="env-btn" onclick="checkEnv()">检测手机与市场客户端</button><span id="env-msg" class="inline-note"></span></div>
+    </div>
+    <div id="env-list"></div>
+  </details>
+</section>
+
+<div class="callout" style="margin-top:18px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+  <div><b>配置完成后开始巡检</b><div class="small">会保存当前市场范围和渠道标记，然后仅巡检上方勾选的 App；不会清空监测清单或历史报表。</div></div>
+  <button class="btn" onclick="runCheck(this)">开始巡检</button>
+</div>
+
+<script>
+const CANDIDATE_PAGE_SIZE=20;
+let candidates=[];let currentQuery='';let candidatePage=1;let searchMeta={};let monitorCount={{ apps|length }};
+const monitoredIdentities=new Set([{% for a in apps %}{{ ((a['platform'] or 'android') ~ ':' ~ (a['ios_bundle_id'] or a['ios_app_id'] if a['platform']=='ios' else a['package_name']))|tojson }},{% endfor %}]);
+const monitoredPlatforms=new Set([{% for p in app_platforms %}{{ p|tojson }},{% endfor %}]);
+function candidateIdentity(c){return `${c.platform||'android'}:${c.platform==='ios'?(c.bundle_id||c.ios_app_id):(c.package_name||'')}`}
+function updateMarketPlatformSections(){
+  const candidatePlatforms=new Set(candidates.map(c=>c.platform||'android'));
+  const showIos=monitoredPlatforms.has('ios')||candidatePlatforms.has('ios');
+  document.getElementById('ios-market-section').style.display=showIos?'block':'none';
+  document.getElementById('ios-market-placeholder').style.display=showIos?'none':'block';
+}
+function searchType(){return document.querySelector('input[name="search-type"]:checked').value}
+function switchSearchType(){const company=searchType()==='company';document.getElementById('search-query').placeholder=company?'例如：示例科技':'例如：示例金融';document.getElementById('search-hint').textContent=company?'系统会列出搜索到的旗下 App，你可以逐个加入监测清单。':'系统会核对应用名称、开发者和隐藏的精确包名。'}
+function saveCandidateState(){if(currentQuery)sessionStorage.setItem('amm-candidate-search',JSON.stringify({query:currentQuery,page:candidatePage,type:searchType()}))}
+function searchApps(restorePage=1){
+  const query=document.getElementById('search-query').value.trim(),btn=document.getElementById('search-btn'),hint=document.getElementById('search-hint'),list=document.getElementById('candidate-list');
+  if(query.length<2){hint.textContent='请输入至少 2 个字符';return}currentQuery=query;candidatePage=Math.max(1,Number(restorePage)||1);candidates=[];updateMarketPlatformSections();btn.disabled=true;hint.textContent='正在支持候选搜索的网页市场查找…';list.innerHTML='';document.getElementById('candidate-pager').style.display='none';
+  fetch('/api/discovery/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query,search_type:searchType()})}).then(r=>r.json()).then(d=>{
+    btn.disabled=false;if(!d.ok){hint.textContent=d.msg||'查询失败';return}candidates=d.candidates||[];searchMeta=d;renderCandidatePage();
+  }).catch(()=>{btn.disabled=false;hint.textContent='查询失败，请稍后重试'});
+}
+function renderCandidatePage(){
+  const hint=document.getElementById('search-hint'),list=document.getElementById('candidate-list'),pager=document.getElementById('candidate-pager');
+  const total=candidates.length,pages=Math.max(1,Math.ceil(total/CANDIDATE_PAGE_SIZE));candidatePage=Math.min(Math.max(1,candidatePage),pages);
+  const start=(candidatePage-1)*CANDIDATE_PAGE_SIZE,end=Math.min(start+CANDIDATE_PAGE_SIZE,total),summary=searchMeta.source_summary||{};
+  const filtered=searchMeta.filtered_out||0,filterNote=filtered?` 已过滤 ${filtered} 条名称或主体不相关的市场返回。`:'';
+  const expanded=(searchMeta.search_terms||[]).slice(1),expandedNote=expanded.length?` 已用“${expanded.join('、')}”扩展搜索。`:'';
+  const lookup=searchMeta.package_lookup||{},lookupNote=lookup.attempted?` 按精确包名反查补充了 ${lookup.matched||0} 条市场上架信息。`:'';
+  if(total){hint.textContent=`从支持候选搜索的 ${summary.successful||0}/${summary.searched||0} 个网页来源找到 ${total} 个相关候选；当前显示 ${start+1}-${end}。${expandedNote}${lookupNote}${filterNote}候选不会自动加入巡检。`}
+  else if(summary.failed){hint.textContent=`未取得候选，且 ${summary.failed} 个候选搜索来源查询失败；当前不能判断该 App 是否在市场发布。`}
+  else if(filtered){hint.textContent=`市场返回了 ${filtered} 条记录，但名称或公司主体均与“${currentQuery}”不相关，已全部过滤；这不等于所有监测市场都没有发布。`}
+  else{hint.textContent=`已接入候选搜索的 ${summary.searched||0} 个网页来源均未找到；这不等于所有监测市场都没有发布。可换公司全称或手工补充包名。`}
+  list.innerHTML=candidates.slice(start,end).map((c,i)=>{const index=start+i,added=monitoredIdentities.has(candidateIdentity(c)),platform=c.platform==='ios'?'iOS':'Android',identifier=c.platform==='ios'?(c.bundle_id||`App Store ID ${c.ios_app_id}`):c.package_name;return `<article class="candidate"><div><b>${escapeHtml(c.app_name)}</b><div class="small">${escapeHtml(c.developer||'开发者信息未提供')}</div><div class="target-meta"><span class="tag t-info">${platform}</span><span class="tag t-gray mono">${escapeHtml(identifier||'')}</span>${c.match_reason?`<span class="tag ${c.entity_match?'t-ok':'t-warn'}">${escapeHtml(c.match_reason)}</span>`:''}<span class="tag t-info">${c.matches.length} 个市场命中</span>${c.matches.slice(0,3).map(m=>`<span class="tag t-gray">${escapeHtml(m.market_name||'未知应用市场')} ${escapeHtml(m.version_name||'')}</span>`).join('')}</div></div><button class="btn ghost" ${added?'disabled':''} onclick="addCandidate(${index},this)">${added?'已在监测清单':'加入监测'}</button></article>`}).join('');
+  pager.style.display=pages>1?'flex':'none';document.getElementById('candidate-prev').disabled=candidatePage<=1;document.getElementById('candidate-next').disabled=candidatePage>=pages;document.getElementById('candidate-page-info').textContent=`第 ${candidatePage} / ${pages} 页 · 共 ${total} 个候选`;updateMarketPlatformSections();saveCandidateState();
+}
+function changeCandidatePage(delta){candidatePage+=delta;renderCandidatePage();document.getElementById('candidate-list').scrollIntoView({behavior:'smooth',block:'start'})}
+function appendRunTarget(c,id){
+  const list=document.getElementById('target-list');list.style.display='grid';document.getElementById('target-empty').style.display='none';document.getElementById('run-scope-controls').style.display='flex';
+  const platform=c.platform==='ios'?'ios':'android',identifier=platform==='ios'?(c.bundle_id||`App Store ID ${c.ios_app_id}`):c.package_name;
+  list.insertAdjacentHTML('beforeend',`<article class="target"><div class="target-head"><div><b>${escapeHtml(c.app_name)}</b><div class="small">${escapeHtml(c.developer||'公司信息待确认')}</div></div><label style="margin:0;display:flex;align-items:center;gap:5px;font-weight:400;white-space:nowrap"><input type="checkbox" class="run-target" data-app-id="${id}" data-platform="${platform}" checked style="width:auto" onchange="updateRunScope()">本轮巡检</label></div><div class="target-meta"><span class="tag t-info">${platform==='ios'?'iOS':'Android'}</span><span class="tag t-gray mono">${escapeHtml(identifier)}</span><span class="tag t-ok">已精确识别</span><span class="tag t-info">刚刚加入</span></div></article>`);
+}
+function addCandidate(index,btn){btn.disabled=true;const c=candidates[index];fetch('/api/apps/from-discovery',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...c,query:currentQuery})}).then(r=>r.json()).then(d=>{if(!d.ok){btn.disabled=false;toast(d.msg||'添加失败');return}monitoredIdentities.add(candidateIdentity(c));monitoredPlatforms.add(c.platform||'android');if(d.resolved_pending){const cb=document.querySelector(`.run-target[data-app-id="${d.id}"]`);if(cb){cb.disabled=false;cb.checked=true;cb.dataset.platform=c.platform||'android';cb.parentElement.lastChild.textContent='本轮巡检'}}else if(!d.existing){monitorCount++;appendRunTarget(c,d.id)}document.getElementById('target-count').textContent=`${monitorCount} 个应用`;renderCandidatePage();updateRunScope();toast(d.resolved_pending?'已确认现有监测对象':'已加入监测清单，搜索结果和当前页已保留')})}
+function addManual(){const body={app_name:document.getElementById('manual-name').value.trim(),company_name:document.getElementById('manual-company').value.trim(),package_name:document.getElementById('manual-package').value.trim(),note:document.getElementById('manual-note').value.trim()};fetch('/api/apps',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).then(d=>d.ok?location.reload():toast(d.msg||'添加失败'))}
+let pendingDeleteButton=null;let pendingDeleteTimer=null;
+function resetDeleteConfirm(){
+  if(pendingDeleteButton){pendingDeleteButton.textContent='移除';pendingDeleteButton.disabled=false;pendingDeleteButton=null}
+  clearTimeout(pendingDeleteTimer);pendingDeleteTimer=null;
+}
+function deleteApp(btn){
+  const id=btn.dataset.appId;
+  if(pendingDeleteButton!==btn){
+    resetDeleteConfirm();pendingDeleteButton=btn;btn.textContent='再次点击确认';
+    toast('再次点击将移除该 App 及其历史巡检记录');
+    pendingDeleteTimer=setTimeout(resetDeleteConfirm,5000);return;
+  }
+  clearTimeout(pendingDeleteTimer);btn.disabled=true;btn.textContent='正在移除…';
+  fetch('/api/apps/'+id+'/delete',{method:'POST'})
+    .then(async r=>({ok:r.ok,data:await r.json().catch(()=>({}))}))
+    .then(({ok,data})=>{if(!ok||!data.ok)throw new Error(data.msg||'移除失败');toast('已从监测清单移除');setTimeout(()=>location.reload(),350)})
+    .catch(e=>{resetDeleteConfirm();toast(e.message||'移除失败，请重试')});
+}
+document.querySelectorAll('.remove-app').forEach(btn=>btn.addEventListener('click',()=>deleteApp(btn)));
+function selectedRunAppIds(){return [...new Set([...document.querySelectorAll('.run-target:checked')].map(x=>Number(x.dataset.appId)))]}
+function selectRunTargets(checked){document.querySelectorAll('.run-target:not(:disabled)').forEach(x=>x.checked=checked);updateRunScope()}
+function selectAllMarkets(checked){document.querySelectorAll('[data-market]').forEach(x=>x.checked=checked);updateRunScope()}
+function updateRunScope(){const selected=[...document.querySelectorAll('.run-target:checked')],markets=[...document.querySelectorAll('[data-market]:checked')],total=selected.reduce((n,a)=>n+markets.filter(m=>m.dataset.platform===a.dataset.platform).length,0),msg=document.getElementById('run-scope-msg'),mmsg=document.getElementById('market-scope-msg');if(msg)msg.textContent=selected.length?`本轮选择 ${selected.length} 个平台应用，预计 ${total} 项查询`:'本轮尚未选择 App';if(mmsg)mmsg.textContent=markets.length?`本次选择 ${markets.length} 个市场`:'本次未选择市场'}
+function saveMarkets(silent=false){const markets=[...document.querySelectorAll('[data-market]')].map(x=>({id:x.dataset.market,enabled:x.checked}));return fetch('/api/markets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({markets})}).then(r=>r.json()).then(d=>{if(!silent)document.getElementById('market-msg').textContent=d.ok?'已保存':'保存失败';return d})}
+function saveAuthority(silent=false){const items=[...document.querySelectorAll('.authority')].map(x=>({app_id:x.dataset.app,market_id:x.dataset.market,authority:x.value}));return fetch('/api/bindings/authority',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items})}).then(r=>r.json()).then(d=>{if(!silent)document.getElementById('authority-msg').textContent=d.ok?'已保存，可随时修改':'保存失败';return d})}
+function checkEnv(){const btn=document.getElementById('env-btn'),msg=document.getElementById('env-msg');btn.disabled=true;msg.textContent='检测中…';fetch('/api/env/check').then(r=>r.json()).then(d=>{btn.disabled=false;msg.textContent=d.phone_ready?'手机已连接，可按下方客户端清单复核':'未形成手机复核环境；网页巡检仍可正常使用';document.getElementById('env-list').innerHTML=d.steps.map(s=>`<div class="callout ${s.status==='ok'?'':'warn'}" style="margin-top:8px"><b>${escapeHtml(s.name)}</b><div class="small">${escapeHtml(s.message)}</div>${(s.actions||[]).map(a=>`<div class="small">· ${escapeHtml(a)}</div>`).join('')}</div>`).join('')}).catch(()=>{btn.disabled=false;msg.textContent='检测失败，请重新连接手机后再试'})}
+function runCheck(btn){
+  const selected=[...document.querySelectorAll('.run-target:checked')],appIds=selectedRunAppIds(),markets=[...document.querySelectorAll('[data-market]:checked')],total=selected.reduce((n,a)=>n+markets.filter(m=>m.dataset.platform===a.dataset.platform).length,0);
+  if(!appIds.length){toast('请先确认候选，并在监测清单勾选本轮要巡检的 App');return}if(!markets.length){toast('请至少启用一个应用市场');return}if(!total){toast('所选 App 没有启用同平台的应用市场');return}
+  if(total>120&&btn.dataset.largeConfirmed!=='1'){btn.dataset.largeConfirmed='1';btn.textContent='再次点击确认大批量巡检';toast(`本轮预计 ${total} 项查询，耗时会明显增加；建议每批约 10 个 App。再次点击可继续。`);setTimeout(()=>{delete btn.dataset.largeConfirmed;btn.textContent='开始巡检'},7000);return}
+  btn.disabled=true;btn.textContent='正在保存配置…';Promise.all([saveMarkets(true),saveAuthority(true)]).then(saved=>{if(saved.some(d=>!d.ok))throw new Error('配置保存失败');btn.textContent='正在启动巡检…';return fetch('/api/check/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({trigger:'manual',app_ids:appIds})})}).then(r=>r.json()).then(d=>{if(!d.ok)throw new Error(d.msg||'巡检启动失败');location.href='/results?run='+d.run_id}).catch(e=>{btn.disabled=false;btn.textContent='开始巡检';toast(e.message||'启动失败')})
+}
+updateMarketPlatformSections();updateRunScope();
+try{const saved=JSON.parse(sessionStorage.getItem('amm-candidate-search')||'null');if(saved&&saved.query){const type=document.querySelector(`input[name="search-type"][value="${saved.type||'app'}"]`);if(type)type.checked=true;switchSearchType();document.getElementById('search-query').value=saved.query;document.getElementById('search-hint').textContent='已恢复上次输入，点击「查找应用」开始搜索。'}}catch(_e){}
+</script>
+{% endblock %}

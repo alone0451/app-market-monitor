@@ -1,0 +1,39 @@
+# Local runtime and configuration
+.venv/
+.tools/
+config.yaml
+.env
+.env.*
+*.local.yaml
+
+# Monitoring data and evidence: never publish
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.apk
+*.aab
+*.xapk
+*.idsig
+*.keystore
+*.jks
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.log
+
+# Generated build/test/cache files
+tools/oppo_bridge/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.DS_Store
+.release_body.md
+
+# Historical local design drafts are not part of the distributable product
+DESIGN_V2.md
+应用市场版本巡检系统-架构设计.html
