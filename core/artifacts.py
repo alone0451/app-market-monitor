@@ -266,7 +266,7 @@ def _find_cached_artifact(app, market_id: str, collected):
 
 
 def _device_extract_artifact(app, market, save_dir) -> dict:
-    """无网页直链时，从已连接实体手机提取已安装的目标应用 APK 并完成身份校验。
+    """无网页直链时，从已连接 Android 测试设备提取 APK 并完成身份校验。
 
     只提取、不自动安装；包名、版本、签名与监测目标不一致时按风险处理，
     与网页直链下载共用同一套 apk_verify 校验口径。
@@ -279,25 +279,20 @@ def _device_extract_artifact(app, market, save_dir) -> dict:
         if not ok or not serial:
             return {"status": "device_unavailable",
                     "detail": message or "未检测到可用设备"}
-        if str(serial).startswith("emulator-"):
-            return {
-                "status": "device_unavailable",
-                "detail": ("未检测到实体手机（当前仅连接了模拟器），且该市场没有网页 APK 直链，"
-                           "无法获取安装包；请连接 USB 手机后重试。"),
-            }
+        device_kind = "模拟器" if str(serial).startswith("emulator-") else "实体手机"
         path_out = executor.dev.shell(f"pm path {app['package_name']}")
         if "package:" not in path_out:
             return {
                 "status": "app_not_installed",
-                "detail": (f"手机已连接（{serial}），但未安装目标应用 {app['package_name']}，"
-                           "无法从手机提取；请先通过官方渠道安装后再试。"),
+                "detail": (f"{device_kind}已连接（{serial}），但未安装目标应用 {app['package_name']}，"
+                           "无法从该设备提取；请先通过官方渠道安装后再试。"),
             }
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
         pulled = executor.dev.extract_apk(app["package_name"], str(save_dir))
         if not pulled or not Path(pulled).is_file():
             return {"status": "extract_failed",
-                    "detail": "从手机提取 APK 失败，请检查 USB 连接和数据线后重试"}
+                    "detail": "从 Android 测试设备提取 APK 失败，请检查 ADB 连接后重试"}
         file_name = (f"app{app['id']}_{market['id']}_"
                      f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.apk")
         local_path = save_dir / file_name
@@ -342,7 +337,7 @@ def _device_extract_artifact(app, market, save_dir) -> dict:
             risk_level = "critical"
             conclusion = "签名与此前同包名可信制品不一致，疑似非官方签名，禁止安装"
         else:
-            conclusion = ("已从手机提取已安装应用：包名与监测目标一致，SHA-256 和签名已记录。"
+            conclusion = (f"已从{device_kind}提取已安装应用：包名与监测目标一致，SHA-256 和签名已记录。"
                           + ("签名与已有制品一致" if baseline else "暂无签名基线，未发现直接冒用证据"))
             if market_version and actual_version and market_version != actual_version:
                 risk_level = "warning"
@@ -377,7 +372,7 @@ def _device_extract_artifact(app, market, save_dir) -> dict:
         }
     except Exception as exc:
         return {"status": "error",
-                "detail": f"手机提取 APK 失败：{type(exc).__name__}: {exc}"}
+                "detail": f"从 Android 测试设备提取 APK 失败：{type(exc).__name__}: {exc}"}
 
 
 def start_artifact_download(market_id: str, app_id: int, method: str = "auto") -> int:

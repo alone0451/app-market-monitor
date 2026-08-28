@@ -91,15 +91,15 @@
   </div>
   <div id="android-market-section" class="callout" style="margin-bottom:12px">
     <h3>Android 应用市场</h3>
-    <p class="small" style="margin:4px 0 11px">覆盖主流安卓厂商和第三方市场；需要手机的渠道会明确标注。</p>
+    <p class="small" style="margin:4px 0 11px">覆盖主流安卓厂商和第三方市场；需要 Android 测试设备的渠道会明确标注。</p>
     <div class="market-grid">
     {% for m in markets if m['platform']=='android' %}
     <label class="market-item">
       <input type="checkbox" data-market="{{ m['id'] }}" data-platform="{{ m['platform'] }}" {% if m['enabled'] %}checked{% endif %} onchange="updateRunScope()">
       <span><b>{{ m['name'] }}</b>
-        <small>{% if m['adapter'] in ('huawei','yyb','baidu','meizu','qihu360') %}支持名称搜索和版本采集{% elif m['adapter'] in ('xiaomi','samsung') %}已知包名后网页采集{% else %}USB 手机客户端采集{% endif %}</small>
+        <small>{% if m['adapter']=='baidu' %}客户端优先；网页备用{% elif m['adapter'] in ('huawei','yyb','meizu','qihu360') %}支持名称搜索和版本采集{% elif m['adapter'] in ('xiaomi','samsung') %}已知包名后网页采集{% else %}Android 测试设备客户端采集{% endif %}</small>
       </span>
-      {% if m['adapter'] in ('huawei','yyb','baidu','meizu','qihu360') %}<span class="tag t-ok">名称可搜</span>{% elif m['adapter'] in ('xiaomi','samsung') %}<span class="tag t-info">包名查版本</span>{% else %}<span class="tag t-info">需连接手机</span>{% endif %}
+      {% if m['adapter'] in ('huawei','yyb','baidu','meizu','qihu360') %}<span class="tag t-ok">名称可搜</span>{% elif m['adapter'] in ('xiaomi','samsung') %}<span class="tag t-info">包名查版本</span>{% else %}<span class="tag t-info">需 Android 测试设备</span>{% endif %}
     </label>
     {% endfor %}
     </div>
@@ -147,11 +147,12 @@
 
 <section class="card">
   <details class="advanced" style="border:0;margin:0;padding:0">
-    <summary>USB 手机渠道复核（可选）</summary>
+    <summary>Android 设备渠道复核（可选）</summary>
     <div style="margin-top:15px">
-      <div class="callout"><h3>USB 手机渠道复核</h3><p class="small" style="margin:5px 0 9px">用于 OPPO、vivo、荣耀等缺少稳定网页数据的渠道，在已安装对应市场客户端的手机上读取详情并截图留证。不会自动下载或安装目标 App；网页查询和网页 APK 的哈希、签名校验均不依赖手机。</p><button class="btn soft" id="env-btn" onclick="checkEnv()">检测手机与市场客户端</button><span id="env-msg" class="inline-note"></span></div>
+      <div class="callout"><h3>Android 设备渠道复核</h3><p class="small" style="margin:5px 0 9px">用于 OPPO、vivo、荣耀等缺少稳定网页数据的渠道，在已安装对应市场客户端的 Android 测试设备（模拟器或实体设备）上读取详情并截图留证。百度仍以网页查询为主，已安装百度客户端时可作为网页失败兜底。不会自动下载或安装目标 App；网页查询和网页 APK 的哈希、签名校验均不依赖设备。</p><button class="btn soft" id="env-btn" onclick="checkEnv()">检测 Android 设备与市场客户端</button><span id="env-msg" class="inline-note"></span></div>
     </div>
     <div id="env-list"></div>
+    <div id="market-bootstrap" class="callout" style="margin-top:12px;display:none"></div>
   </details>
 </section>
 
@@ -229,7 +230,10 @@ function selectAllMarkets(checked){document.querySelectorAll('[data-market]').fo
 function updateRunScope(){const selected=[...document.querySelectorAll('.run-target:checked')],markets=[...document.querySelectorAll('[data-market]:checked')],total=selected.reduce((n,a)=>n+markets.filter(m=>m.dataset.platform===a.dataset.platform).length,0),msg=document.getElementById('run-scope-msg'),mmsg=document.getElementById('market-scope-msg');if(msg)msg.textContent=selected.length?`本轮选择 ${selected.length} 个平台应用，预计 ${total} 项查询`:'本轮尚未选择 App';if(mmsg)mmsg.textContent=markets.length?`本次选择 ${markets.length} 个市场`:'本次未选择市场'}
 function saveMarkets(silent=false){const markets=[...document.querySelectorAll('[data-market]')].map(x=>({id:x.dataset.market,enabled:x.checked}));return fetch('/api/markets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({markets})}).then(r=>r.json()).then(d=>{if(!silent)document.getElementById('market-msg').textContent=d.ok?'已保存':'保存失败';return d})}
 function saveAuthority(silent=false){const items=[...document.querySelectorAll('.authority')].map(x=>({app_id:x.dataset.app,market_id:x.dataset.market,authority:x.value}));return fetch('/api/bindings/authority',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items})}).then(r=>r.json()).then(d=>{if(!silent)document.getElementById('authority-msg').textContent=d.ok?'已保存，可随时修改':'保存失败';return d})}
-function checkEnv(){const btn=document.getElementById('env-btn'),msg=document.getElementById('env-msg');btn.disabled=true;msg.textContent='检测中…';fetch('/api/env/check').then(r=>r.json()).then(d=>{btn.disabled=false;msg.textContent=d.phone_ready?'手机已连接，可按下方客户端清单复核':'未形成手机复核环境；网页巡检仍可正常使用';document.getElementById('env-list').innerHTML=d.steps.map(s=>`<div class="callout ${s.status==='ok'?'':'warn'}" style="margin-top:8px"><b>${escapeHtml(s.name)}</b><div class="small">${escapeHtml(s.message)}</div>${(s.actions||[]).map(a=>`<div class="small">· ${escapeHtml(a)}</div>`).join('')}</div>`).join('')}).catch(()=>{btn.disabled=false;msg.textContent='检测失败，请重新连接手机后再试'})}
+function checkEnv(){const btn=document.getElementById('env-btn'),msg=document.getElementById('env-msg');btn.disabled=true;msg.textContent='检测中…';fetch('/api/env/check').then(r=>r.json()).then(d=>{btn.disabled=false;msg.textContent=d.android_device_ready?'Android 测试设备已连接，可按下方客户端清单复核':'未形成 Android 设备复核环境；网页巡检仍可正常使用';document.getElementById('env-list').innerHTML=d.steps.map(s=>`<div class="callout ${s.status==='ok'?'':'warn'}" style="margin-top:8px"><b>${escapeHtml(s.name)}</b><div class="small">${escapeHtml(s.message)}</div>${(s.actions||[]).map(a=>`<div class="small">· ${escapeHtml(a)}</div>`).join('')}</div>`).join('');loadMarketBootstrap()}).catch(()=>{btn.disabled=false;msg.textContent='检测失败，请确认 Android 测试设备已连接后再试'})}
+function loadMarketBootstrap(){fetch('/api/device/market/bootstrap').then(r=>r.json()).then(d=>{const box=document.getElementById('market-bootstrap'),states=d.markets||[];if(!states.length){box.style.display='none';return}box.style.display='block';box.innerHTML='<b>市场客户端一次性初始化</b><div class="small" style="margin:4px 0 9px">仅确认市场客户端自身的首次启动协议，不会替检测对象同意隐私政策；每个客户端版本只需确认一次。</div>'+states.map(s=>{const ready=s.status==='initialized',missing=s.status==='market_app_missing',region=s.status==='region_unavailable',fallback=s.status==='fallback_available',label=ready?'已初始化':(missing?'未安装':(region?'当前地区不可用':(fallback?'官方替代证据可用':'需要确认'))),action=ready||missing||region||fallback?'':`<button class="btn soft" style="margin-left:9px;padding:5px 10px" onclick="bootstrapMarket('${s.market_id}',this)">确认并初始化</button>`;return `<div style="display:flex;align-items:center;justify-content:space-between;border-top:1px solid #e3e6ea;padding:8px 0"><span><b>${escapeHtml(s.market_name)}</b><span class="tag ${ready?'t-ok':(missing?'t-gray':'t-warn')}" style="margin-left:7px">${label}</span><div class="small">${escapeHtml(s.detail||'')}</div></span>${action}</div>`}).join('')}).catch(()=>{})}
+function bootstrapMarket(marketId,btn){if(!window.confirm('确认一次性接受该市场客户端的用户协议、隐私声明和首次启动说明？系统不会自动授予 Android 运行时权限。'))return;btn.disabled=true;btn.textContent='初始化中…';fetch('/api/device/market/bootstrap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({market_id:marketId,confirm:true})}).then(async r=>({ok:r.ok,data:await r.json().catch(()=>({}))})).then(({ok,data})=>{if(!ok||!data.ok)throw new Error(data.detail||data.msg||'初始化未完成');toast(data.detail||'初始化完成');loadMarketBootstrap()}).catch(e=>{btn.disabled=false;btn.textContent='确认并初始化';toast(e.message||'初始化失败')})}
+loadMarketBootstrap();
 function runCheck(btn){
   const selected=[...document.querySelectorAll('.run-target:checked')],appIds=selectedRunAppIds(),markets=[...document.querySelectorAll('[data-market]:checked')],total=selected.reduce((n,a)=>n+markets.filter(m=>m.dataset.platform===a.dataset.platform).length,0);
   if(!appIds.length){toast('请先确认候选，并在监测清单勾选本轮要巡检的 App');return}if(!markets.length){toast('请至少启用一个应用市场');return}if(!total){toast('所选 App 没有启用同平台的应用市场');return}

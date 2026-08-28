@@ -1,7 +1,10 @@
 """Market-specific Android UI drivers."""
 
 from .yyb import YybDeviceDriver
-from .generic import HuaweiDeviceDriver, HonorDeviceDriver, OppoDeviceDriver, VivoDeviceDriver
+from .generic import (
+    HuaweiDeviceDriver, HonorDeviceDriver, OppoDeviceDriver, VivoDeviceDriver,
+    BaiduDeviceDriver,
+)
 
 
 DEVICE_DRIVERS = {
@@ -10,6 +13,7 @@ DEVICE_DRIVERS = {
     "oppo": OppoDeviceDriver,
     "vivo": VivoDeviceDriver,
     "honor": HonorDeviceDriver,
+    "baidu": BaiduDeviceDriver,
 }
 
 

@@ -2,7 +2,7 @@
 {% block title %}新建监测 · 应用市场版本巡检{% endblock %}
 {% block content %}
 <h1>新建监测任务</h1>
-<p class="sub">先用自然语言找到正确的 App，再查各市场版本；缺少稳定网页数据的渠道可连接手机复核详情。</p>
+<p class="sub">先用自然语言找到正确的 App，再查各市场版本；缺少稳定网页数据的渠道可连接 Android 测试设备复核详情。</p>
 
 <div class="stepper" id="stepper"></div>
 <div id="wiz-root" style="max-width:900px"></div>
@@ -15,8 +15,8 @@ let currentQuery = '';
 let step = 0;
 const steps = [
   ['确认监测对象','输入 App 名称或公司名称，由系统查找候选并让你确认。'],
-  ['选择应用市场','先启用能按包名稳定查询的渠道；其他渠道可在接入旧手机后逐个开启。'],
-  ['准备真机','网页渠道不要求手机；OPPO、vivo、荣耀等渠道可用 USB 手机客户端复核。'],
+  ['选择应用市场','先启用能按包名稳定查询的渠道；其他渠道可在接入 Android 测试设备后逐个开启。'],
+  ['准备 Android 测试设备','网页渠道不要求设备；OPPO、vivo、荣耀等渠道可用模拟器或实体设备中的市场客户端复核；百度客户端初始化后优先使用模拟器，网页仅作备用。'],
   ['首次巡检','先查版本，再根据结果决定是否下载。']
 ];
 const packageReady = new Set(['huawei','xiaomi','yyb','samsung','baidu','meizu','appstore','qihu360']);
@@ -92,7 +92,7 @@ function addManual(){
 function renderMarkets(){
   return `<div class="market-list">${markets.map(m=>`<label class="market-choice">
     <input type="checkbox" data-market="${esc(m.id)}" ${m.enabled?'checked':''}>
-    <span><b>${esc(m.name)}</b><small>${packageReady.has(m.id)?'网页按包名查询 · 推荐':'需要市场 ID 或 USB 手机 · 暂不推荐首轮'}</small></span>
+    <span><b>${esc(m.name)}</b><small>${packageReady.has(m.id)?'网页按包名查询 · 推荐':'需要市场 ID 或 Android 设备 · 暂不推荐首轮'}</small></span>
     <span class="tag ${packageReady.has(m.id)?'t-ok':'t-gray'}">${packageReady.has(m.id)?'可用':'待接入'}</span></label>`).join('')}</div>
     <div id="market-msg" class="small"></div>`;
 }
@@ -103,15 +103,15 @@ function saveMarkets(){
 }
 
 function renderDevice(){
-  return `<div class="callout"><b>USB 手机渠道复核（可选）</b><div class="small">用于打开已安装的市场客户端、读取应用详情并截图留证；不会自动下载或安装目标 App，网页版本巡检也不需要连接手机。</div></div>
-    <div class="search-row"><button class="btn" id="env-btn" onclick="runEnv()">检测手机与市场客户端</button></div>
+  return `<div class="callout"><b>Android 测试设备渠道复核（可选）</b><div class="small">用于打开已安装的市场客户端、读取应用详情并截图留证；模拟器或实体设备均可，不会自动下载或安装目标 App，网页版本巡检也不需要连接设备。</div></div>
+    <div class="search-row"><button class="btn" id="env-btn" onclick="runEnv()">检测 Android 设备与市场客户端</button></div>
     <div id="device-msg" class="small"></div><div id="env-list"></div>
-    <p class="small">现在没有连接手机也可以继续完成网页版本巡检；系统需要下载时会明确提示。</p>`;
+    <p class="small">现在没有连接 Android 设备也可以继续完成网页版本巡检；系统需要设备提取时会明确提示。</p>`;
 }
 function runEnv(){
   const btn=document.getElementById('env-btn');btn.disabled=true;document.getElementById('device-msg').textContent='检测中…';
   fetch('/api/env/check').then(r=>r.json()).then(d=>{
-    btn.disabled=false;document.getElementById('device-msg').textContent=d.phone_ready?'手机已连接，可按客户端清单复核':'网页巡检已就绪；手机复核环境仍有待处理项';
+    btn.disabled=false;document.getElementById('device-msg').textContent=d.android_device_ready?'Android 测试设备已连接，可按客户端清单复核':'网页巡检已就绪；Android 设备复核环境仍有待处理项';
     document.getElementById('env-list').innerHTML=d.steps.map(s=>`<div class="env-item ${esc(s.status)}"><b>${esc(s.name)}</b><div class="small">${esc(s.message)}</div>${(s.actions||[]).map(a=>`<div class="small">· ${esc(a)}</div>`).join('')}</div>`).join('');
   });
 }

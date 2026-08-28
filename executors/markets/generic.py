@@ -1,8 +1,8 @@
 """通用国产应用市场真机驱动。
 
 OPPO、vivo、荣耀的控件 ID 会随机型和客户端版本变化，因此优先使用语义
-文本、content-desc 与 ID 关键词组合定位。驱动不会代替用户接受服务协议、
-隐私政策或登录授权；遇到这些页面会留下截图并给出明确状态。
+文本、content-desc 与 ID 关键词组合定位。正常巡检不会代替用户接受服务协议、
+隐私政策或登录授权；首次启动协议仅由显式的一次性初始化流程处理。
 """
 import re
 import shlex
@@ -15,16 +15,32 @@ from .yyb import LATIN_IME, _pinyin_query
 
 
 _VERSION_PATTERNS = (
-    re.compile(r"(?:版本名称|版本号|当前版本|版本)\s*[:：]?\s*[vV]?\s*(\d+(?:\.\d+){1,4})"),
+    re.compile(r"(?:版本信息|版本名称|版本号|当前版本|版本|Version)\s*[:：]?\s*[vV]?\s*(\d+(?:\.\d+){1,4})", re.I),
     re.compile(r"^[vV]?(\d+(?:\.\d+){2,4})$"),
 )
 _STRONG_CONSENT_WORDS = ("同意并继续", "同意并使用", "阅读并同意")
+_CONSENT_PAGE_WORDS = (
+    "用户协议", "服务协议", "隐私政策", "隐私声明", "隐私通知",
+    "user agreement", "privacy notice", "privacy statement", "terms of use",
+)
+_CONSENT_ACTION_WORDS = (
+    "同意并继续", "同意并使用", "阅读并同意", "同意", "接受", "下一步",
+    "继续", "启用", "立即开启", "agree", "accept", "next", "continue",
+    "enable now", "turn on now",
+)
 _LOGIN_WORDS = ("登录后", "手机号登录", "验证码登录", "账号登录", "请登录")
 _SEARCH_HINTS = ("搜索应用", "搜索游戏", "搜索", "请输入应用名称")
 _SEARCH_ID_HINTS = ("search", "query", "edit", "input")
-_DATE_LABELS = ("更新日期", "更新时间", "最近更新", "发布日期", "发布时间", "上架时间")
+_DATE_LABELS = ("更新日期", "更新时间", "最近更新", "发布日期", "发布时间", "上架时间", "上线日期",
+                "Update time", "Updated", "Release date")
 _DATE_RE = re.compile(r"(?<!\d)(20\d{2})[年./-](\d{1,2})[月./-](\d{1,2})日?")
 _RELATIVE_RE = re.compile(r"(\d+)\s*(年前|个月前|月前|周前|天前|小时前)")
+_REGION_UNAVAILABLE_WORDS = (
+    "not available in current region",
+    "service is currently unavailable in your country",
+    "当前地区不可用", "当前区域不可用", "本地区暂未提供服务", "本区域暂未提供服务",
+    "服务区域不可用", "暂未提供服务",
+)
 
 
 def parse_version(texts: list[str]) -> str:
@@ -94,12 +110,13 @@ def parse_entities(texts: list[str]) -> dict[str, str]:
     """Read developer and operating/legal entities as separate labelled fields."""
     values = [str(value).strip() for value in texts if str(value).strip()]
     groups = {
-        "developer": ("开发者", "开发商", "发布者", "供应商"),
+        "developer": ("开发者详情", "开发者", "开发商", "发布者", "供应商"),
         "operator": ("运营者", "运营主体", "主办者", "主办单位", "开发运营者"),
     }
     all_labels = tuple(label for labels in groups.values() for label in labels)
     boundary_labels = all_labels + (
-        "版本名称", "版本号", "当前版本", "版本", "更新时间", "更新日期",
+        "版本信息", "版本名称", "版本号", "当前版本", "版本", "更新时间", "更新日期", "上线日期",
+        "核准主体", "核准号",
         "隐私政策", "权限", "应用权限", "应用分级", "备案号", "核准号",
     )
     boundary_pattern = re.compile(
@@ -167,13 +184,44 @@ class GenericStoreDriver:
 
     def _blocked(self, nodes: list[dict]) -> tuple[bool, str]:
         page = self._page_text(nodes)
+        if any(word in page.lower() for word in _REGION_UNAVAILABLE_WORDS):
+            return True, f"{self.display_name}在当前模拟器地区不可用，无法打开市场详情"
         has_terms = any(word in page for word in ("用户协议", "服务协议", "隐私政策"))
         has_consent_action = any(word in page for word in ("不同意", "暂不同意", "退出应用", "同意并"))
         if any(word in page for word in _STRONG_CONSENT_WORDS) or (has_terms and has_consent_action):
-            return True, "检测到首次启动协议或隐私授权页，请在手机上阅读并手工处理后重试"
+            return True, "检测到首次启动协议或隐私授权页，请在 Android 设备上阅读并手工处理后重试"
         if any(word in page for word in _LOGIN_WORDS):
-            return True, "市场客户端要求登录或短信验证码，请先在手机上完成登录后重试"
+            return True, "市场客户端要求登录或短信验证码，请先在 Android 设备上完成登录后重试"
         return False, ""
+
+    @staticmethod
+    def _status_for_reason(reason: str) -> str:
+        lowered = (reason or "").lower()
+        if "地区不可用" in reason or "region" in lowered or "country" in lowered:
+            return "region_unavailable"
+        if "登录" in reason:
+            return "login_required"
+        return "need_review"
+
+    def consent_gate(self, nodes: list[dict]) -> tuple[bool, dict | None, str]:
+        """Detect a first-run market agreement without accepting it.
+
+        The normal inspection path must remain consent-safe.  The explicit
+        bootstrap endpoint calls this helper before clicking a button, so a
+        similarly labelled action on a normal detail page cannot be accepted
+        accidentally.
+        """
+        page = self._page_text(nodes).lower()
+        has_policy = any(word.lower() in page for word in _CONSENT_PAGE_WORDS)
+        if not has_policy:
+            return False, None, ""
+        action = self._best_node(
+            nodes, text_words=_CONSENT_ACTION_WORDS,
+            id_words=("agree", "consent", "agreement", "next"),
+        )
+        if not action:
+            return True, None, "检测到市场客户端协议页，但未找到确认按钮"
+        return True, action, "检测到市场客户端首次启动协议页"
 
     @staticmethod
     def _best_node(nodes: list[dict], *, text_words=(), id_words=(), editable=False):
@@ -250,14 +298,49 @@ class GenericStoreDriver:
         page_packages = {node.get("package") for node in nodes if node.get("package")}
         if page_packages and self.package not in page_packages:
             return None
+        # Honor (and some regional vendor builds) can accept the URI but render
+        # a service-region block instead of a detail page.  Surface that exact
+        # condition before the title/deep-link validation so it is not reported
+        # as the generic "upgrade client" error.
+        page_lower = self._page_text(nodes).lower()
+        if any(word in page_lower for word in _REGION_UNAVAILABLE_WORDS):
+            return self._result(
+                False, f"{self.display_name}在当前模拟器地区不可用，无法打开市场详情",
+                screenshot_dir, status="region_unavailable",
+            )
 
         def target_is_primary(current_nodes):
             # A recommendation far below the fold must never be mistaken for the
-            # currently opened app. Vendor pages place the target title near the top.
+            # currently opened app. A package deep-link is trusted, but some market
+            # clients omit the title from accessibility nodes and expose only the
+            # English/Chinese detail metadata (for example ``Version: 2.1.4``).
             prominent = [value for node in current_nodes
                          for value in (node.get("text", ""), node.get("desc", ""))
                          if value][:8]
-            return any(app_name in value for value in prominent)
+            if any(app_name in value for value in prominent):
+                return True
+            texts = [value for node in current_nodes
+                     for value in (node.get("text", ""), node.get("desc", ""))
+                     if value]
+            # Several clients render the title below the first viewport.  Accept
+            # it when the accessibility resource identifies a detail-title row,
+            # but do not accept an arbitrary recommendation containing the name.
+            title_ids = ("package_detail_title", "downloader_app_name", "app_name",
+                         "detail_title", "app_title")
+            if any(app_name in (node.get("text", "") or node.get("desc", ""))
+                   and any(token in node.get("rid", "") for token in title_ids)
+                   for node in current_nodes):
+                return True
+            marker_count = sum(any(marker.lower() in value.lower()
+                                   for marker in ("version", "版本", "app introduction", "应用介绍",
+                                                  "update time", "更新时间"))
+                               for value in texts)
+            detail_ids = ("package_detail", "detail_content", "app_detail",
+                          "tv_ver_and_time", "version")
+            has_detail_id = any(any(token in node.get("rid", "")
+                                    for token in detail_ids)
+                                for node in current_nodes)
+            return has_detail_id and (bool(parse_version(texts)) or marker_count >= 2)
 
         if not target_is_primary(nodes):
             # 详情页可能仍在加载：先重试几次，再决定是否放弃直达路径。
@@ -275,8 +358,8 @@ class GenericStoreDriver:
         for _ in range(4):
             blocked, reason = self._blocked(nodes)
             if blocked:
-                status = "login_required" if "登录" in reason else "need_review"
-                return self._result(False, reason, screenshot_dir, status=status)
+                return self._result(False, reason, screenshot_dir,
+                                    status=self._status_for_reason(reason))
             texts = [value for node in nodes
                      for value in (node.get("text", ""), node.get("desc", ""))]
             version = parse_version(texts)
@@ -357,7 +440,7 @@ class GenericStoreDriver:
 
     def inspect(self, package_name: str, app_name: str, screenshot_dir: str) -> dict:
         if not app_name:
-            return {"ok": False, "status": "need_review", "detail": "手机端搜索需要应用名称"}
+            return {"ok": False, "status": "need_review", "detail": "Android 设备端搜索需要应用名称"}
         query = _pinyin_query(app_name)
         if not query:
             return {"ok": False, "status": "need_review",
@@ -385,8 +468,8 @@ class GenericStoreDriver:
             nodes = self._wait_for_nodes(package=self.package)
             blocked, reason = self._blocked(nodes)
             if blocked:
-                status = "login_required" if "登录" in reason else "need_review"
-                return self._result(False, reason, screenshot_dir, status=status)
+                return self._result(False, reason, screenshot_dir,
+                                    status=self._status_for_reason(reason))
             if self._safe_dismiss(nodes):
                 nodes = self._wait_for_nodes(package=self.package)
 
@@ -402,8 +485,8 @@ class GenericStoreDriver:
             nodes = self.dev.nodes(xml)
             blocked, reason = self._blocked(nodes)
             if blocked:
-                status = "login_required" if "登录" in reason else "need_review"
-                return self._result(False, reason, screenshot_dir, status=status)
+                return self._result(False, reason, screenshot_dir,
+                                    status=self._status_for_reason(reason))
 
             field = self._best_node(nodes, text_words=_SEARCH_HINTS,
                                     id_words=_SEARCH_ID_HINTS, editable=True)
@@ -420,8 +503,8 @@ class GenericStoreDriver:
             nodes = self.dev.nodes(xml)
             blocked, reason = self._blocked(nodes)
             if blocked:
-                status = "login_required" if "登录" in reason else "need_review"
-                return self._result(False, reason, screenshot_dir, status=status)
+                return self._result(False, reason, screenshot_dir,
+                                    status=self._status_for_reason(reason))
             hit = self._best_node(nodes, text_words=(app_name,), id_words=())
             if not hit:
                 return self._result(
@@ -457,7 +540,7 @@ class GenericStoreDriver:
                         "detail": (f"已打开{self.display_name}中的“{app_name}”详情页，但未自动识别版本号；"
                                    f"请查看现场截图。{ocr_detail[:100]}")}
             return {"ok": True, "status": "ok", "version": version, "screenshot": shot,
-                    "detail": f"{self.display_name}手机端详情页采集：版本 {version}；目标包名 {package_name}"}
+                    "detail": f"{self.display_name} Android 设备端详情页采集：版本 {version}；目标包名 {package_name}"}
         finally:
             if original_ime and original_ime != "null":
                 self.dev.shell(f"ime set {original_ime}")
@@ -551,7 +634,7 @@ class OppoDeviceDriver(GenericStoreDriver):
     def inspect(self, package_name: str, app_name: str, screenshot_dir: str) -> dict:
         """Try the official package route, then an exact Chinese clipboard search."""
         if not app_name:
-            return {"ok": False, "status": "need_review", "detail": "手机端搜索需要应用名称"}
+            return {"ok": False, "status": "need_review", "detail": "Android 设备端搜索需要应用名称"}
         direct_ok, nodes = self._open_package_detail(package_name)
         if direct_ok:
             direct_result = self._read_opened_detail(
@@ -728,6 +811,47 @@ class HonorDeviceDriver(GenericStoreDriver):
     # 荣耀市场注册的深链 authority 是 app_details；写成 details 会匹配失败，
     # am start 报 unable to resolve，导致“未能按包名打开详情”。
     detail_scheme = "honormarket://app_details?id={package_name}"
+
+
+class BaiduDeviceDriver(GenericStoreDriver):
+    """百度手机助手设备端驱动。
+
+    百度网页接口仍是主路径；仅在设备上已经安装百度手机助手且网页查询
+    不可用时，使用 Android 标准 ``market://`` 详情深链做补充复核。这样
+    不会把模拟器缺少客户端误报成“百度未上架”，也不会替换稳定的网页证据。
+    """
+    market_id = "baidu"
+    package = "com.baidu.appsearch"
+    display_name = "百度手机助手"
+    detail_scheme = "market://details?id={package_name}"
+
+    def _read_opened_detail(self, package_name: str, app_name: str,
+                            screenshot_dir: str, nodes: list[dict]):
+        # 百度客户端的详情深链在部分版本会恢复上一次的截图查看器，
+        # 该页面只有 ImageView，不能作为应用详情证据。退回一层后再读取
+        # 带有应用名、版本信息和上线日期的详情页。
+        has_image_view = any(
+            "imageView" in (node.get("rid") or "")
+            for node in nodes
+        )
+        has_detail_title = any(
+            "app_detail_header_app_name" in (node.get("rid") or "")
+            for node in nodes
+        )
+        if has_image_view and not has_detail_title:
+            self.dev.key_back()
+            time.sleep(1.5)
+            nodes = self._wait_for_nodes(package=self.package)
+
+        result = super()._read_opened_detail(
+            package_name, app_name, screenshot_dir, nodes,
+        )
+        if result is not None and result.get("ok"):
+            result["detail"] = (
+                f"百度手机助手客户端按包名打开详情：版本 {result.get('version', '')}；"
+                f"目标包名 {package_name}"
+            )
+        return result
 
 
 class HuaweiDeviceDriver(GenericStoreDriver):

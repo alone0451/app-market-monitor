@@ -11,6 +11,8 @@ ST_NEED_REVIEW = "need_review"  # 已到达目标页面，但版本需人工确�
 ST_DEVICE_UNAVAILABLE = "device_unavailable"  # 未检测到可用 Android 设备
 ST_MARKET_APP_MISSING = "market_app_missing"  # 设备未安装对应市场客户端
 ST_LOGIN_REQUIRED = "login_required"  # 市场要求登录、验证码或首次授权
+ST_REGION_UNAVAILABLE = "region_unavailable"  # 官方客户端因地区/设备环境不可用
+ST_FALLBACK_OK = "fallback_ok"  # 官方替代来源取得版本，非目标客户端直采
 ST_ERROR = "error"        # 请求/解析错误
 ST_PACKAGE_MISMATCH = "package_mismatch"  # 找到同名应用，但包名不是目标包
 
@@ -24,7 +26,7 @@ class CollectResult:
     extra: dict = field(default_factory=dict)
 
     def ok(self) -> bool:
-        return self.status in (ST_OK, ST_OFFLINE)
+        return self.status in (ST_OK, ST_OFFLINE, ST_FALLBACK_OK)
 
 
 @dataclass

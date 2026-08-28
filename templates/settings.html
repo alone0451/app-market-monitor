@@ -2,11 +2,11 @@
 {% block title %}设置 · 应用市场版本巡检{% endblock %}
 {% block content %}
 <h1>设置</h1>
-<p class="sub">手机渠道复核引导与渠道勾选。渠道权威性在「巡检结果」页按 App×渠道标记。</p>
+<p class="sub">Android 测试设备渠道复核引导与渠道勾选。渠道权威性在「巡检结果」页按 App×渠道标记。</p>
 
 <div class="card">
-  <h2>USB 手机渠道复核（可选）</h2>
-  <p class="small">仅检查 ADB、手机连接和已安装的应用市场客户端。它用于手机端读取详情和截图，不会自动下载或安装目标 App。</p>
+  <h2>Android 设备渠道复核（可选）</h2>
+  <p class="small">检查 ADB、Android 测试设备（模拟器或实体设备），以及已安装的应用市场客户端。设备端用于读取详情和截图，不会自动下载或安装目标 App。</p>
   <div id="env-wizard" style="margin-top:12px">
     <div style="margin-bottom:12px">
       <button class="btn" onclick="runEnvCheck()" id="env-btn">开始检测</button>
@@ -14,11 +14,12 @@
     </div>
     <div id="env-steps"></div>
   </div>
+  <div id="market-bootstrap" class="callout" style="margin-top:14px;display:none"></div>
 </div>
 
 <div class="card">
   <h2>渠道</h2>
-  <p class="small">六个渠道可直接网页查询；OPPO、vivo、荣耀通过 USB 手机客户端采集。</p>
+  <p class="small">网页渠道可直接查询；OPPO、vivo、荣耀通过 Android 测试设备上的市场客户端采集；百度在客户端已安装并初始化时优先使用模拟器，客户端不可用时才回落网页。</p>
   <table>
     <tr><th style="width:60px">启用</th><th>渠道</th><th>采集器状态</th></tr>
     {% for m in markets %}
@@ -26,8 +27,9 @@
       <td><input type="checkbox" data-mk-enabled="{{ m['id'] }}" {% if m['enabled'] %}checked{% endif %}></td>
       <td>{{ m['name'] }}<div class="small mono">{{ m['id'] }}</div></td>
       <td>
-        {% if m['adapter'] in ('huawei','xiaomi','yyb','samsung','baidu','meizu','appstore','qihu360') %}<span class="tag t-ok">网页采集</span>
-        {% else %}<span class="tag t-info">USB 手机采集</span>{% endif %}
+        {% if m['adapter']=='baidu' %}<span class="tag t-ok">客户端优先 · 网页备用</span>
+        {% elif m['adapter'] in ('huawei','xiaomi','yyb','samsung','meizu','appstore','qihu360') %}<span class="tag t-ok">网页采集</span>
+        {% else %}<span class="tag t-info">Android 测试设备采集</span>{% endif %}
       </td>
     </tr>
     {% endfor %}
@@ -68,13 +70,41 @@ function runEnvCheck(){
       html += '</div>';
       box.innerHTML += html;
     });
-    document.getElementById('env-hint').textContent = d.phone_ready ? '手机已连接，可按客户端清单复核 ✓' :
-      (d.web_ready ? '网页巡检已就绪；手机复核环境仍有待处理项' : '存在待处理项，按提示操作后重试');
+    document.getElementById('env-hint').textContent = d.android_device_ready ? 'Android 测试设备已连接，可按客户端清单复核 ✓' :
+      (d.web_ready ? '网页巡检已就绪；Android 设备复核环境仍有待处理项' : '存在待处理项，按提示操作后重试');
+    loadMarketBootstrap();
     btn.disabled = false;
   }).catch(e => {
     document.getElementById('env-hint').textContent = '检测失败: ' + e;
     btn.disabled = false;
   });
 }
+function loadMarketBootstrap(){
+  fetch('/api/device/market/bootstrap').then(r=>r.json()).then(d=>{
+    const box=document.getElementById('market-bootstrap');
+    const states=d.markets||[];
+    if(!states.length){box.style.display='none';return}
+    box.style.display='block';
+    box.innerHTML='<b>市场客户端一次性初始化</b><div class="small" style="margin:4px 0 9px">仅确认市场客户端自身的首次启动协议，不会替检测对象同意隐私政策；每个客户端版本只需确认一次。</div>'+
+      states.map(s=>{
+        const ready=s.status==='initialized';
+        const missing=s.status==='market_app_missing';
+        const region=s.status==='region_unavailable';
+        const fallback=s.status==='fallback_available';
+        const label=ready?'已初始化':(missing?'未安装':(region?'当前地区不可用':(fallback?'官方替代证据可用':'需要确认')));
+        const action=ready||missing||region||fallback?'':`<button class="btn soft" style="margin-left:9px;padding:5px 10px" onclick="bootstrapMarket('${s.market_id}',this)">确认并初始化</button>`;
+        return `<div style="display:flex;align-items:center;justify-content:space-between;border-top:1px solid #e3e6ea;padding:8px 0"><span><b>${escapeHtml(s.market_name)}</b><span class="tag ${ready?'t-ok':(missing?'t-gray':'t-warn')}" style="margin-left:7px">${label}</span><div class="small">${escapeHtml(s.detail||'')}</div></span>${action}</div>`;
+      }).join('');
+  }).catch(()=>{});
+}
+function bootstrapMarket(marketId,btn){
+  if(!window.confirm('确认一次性接受该市场客户端的用户协议、隐私声明和首次启动说明？系统不会自动授予 Android 运行时权限。'))return;
+  btn.disabled=true;btn.textContent='初始化中…';
+  fetch('/api/device/market/bootstrap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({market_id:marketId,confirm:true})})
+    .then(async r=>({ok:r.ok,data:await r.json().catch(()=>({}))}))
+    .then(({ok,data})=>{if(!ok||!data.ok)throw new Error(data.detail||data.msg||'初始化未完成');toast(data.detail||'初始化完成');loadMarketBootstrap()})
+    .catch(e=>{btn.disabled=false;btn.textContent='确认并初始化';toast(e.message||'初始化失败')});
+}
+loadMarketBootstrap();
 </script>
 {% endblock %}

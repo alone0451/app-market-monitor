@@ -91,49 +91,46 @@ def check_adb():
 
 
 def check_usb_phone():
+    """检查可执行市场客户端复核的 Android 测试设备（实体机或模拟器）。"""
     adb, _ = find_adb()
     if not adb:
-        return ("warn", "跳过（ADB 未安装，先解决 ADB 再检测手机）", [])
+        return ("warn", "跳过（ADB 未安装，先解决 ADB 再检测 Android 设备）", [])
     code, out = _run(f'"{adb}" devices -l')
     if code != 0:
         detail = next((line.strip() for line in reversed(out.splitlines()) if line.strip()), "未知错误")
         return ("fail", f"ADB 无法启动：{detail[:160]}",
                 ["关闭其他占用 ADB 的程序后重试",
-                 "执行项目内 .tools/android/platform-tools/adb kill-server 后重新连接手机"])
+                 "执行项目内 .tools/android/platform-tools/adb kill-server 后重新连接 Android 设备"])
     devices = parse_adb_devices(out)
-    physical = [d for d in devices if not d["is_emulator"]]
-    emulators = [d for d in devices if d["is_emulator"] and d["state"] == "device"]
-    if not physical:
-        prefix = ("仅检测到 Android 模拟器：" + ", ".join(d["serial"] for d in emulators) + "；") if emulators else ""
-        return ("fail", "未检测到 USB 安卓测试机", [
-            prefix + "模拟器不能替代实体应用市场适配",
-            "1. 用 USB 数据线连接安卓测试手机到本机",
-            "2. 解锁手机，将 USB 用途切换为「文件传输 / Android Auto」而不是仅充电",
-            "3. 手机「设置 → 关于手机」连点「版本号」7 次开启开发者模式",
-            "4. 「设置 → 开发者选项」打开「USB 调试」",
-            "5. 手机弹窗「允许 USB 调试吗？」→ 勾选始终允许 → 确定",
-            "6. 若仍不可见，换一根确认支持数据传输的 USB 线或接口",
+    usable = [d for d in devices if d["state"] == "device"]
+    if not usable:
+        return ("fail", "未检测到可用 Android 测试设备", [
+            "可连接实体手机并开启 USB 调试，或启动一个可用的 Android 模拟器",
+            "设备连接后请保持亮屏并解锁，市场客户端才能进行 UI 查询",
         ])
     summary = []
     ok_any = False
-    for device in physical:
+    for device in usable:
         sid, state = device["serial"], device["state"]
-        if state == "unauthorized":
-            summary.append(f"{sid} 未授权 — 请在手机弹窗点击「允许 USB 调试」")
-        elif state == "offline":
-            summary.append(f"{sid} 离线 — 请重新插拔 USB 线")
-        elif state == "device":
-            ok_any = True
-            summary.append(f"{sid} 已连接 ✓")
-        else:
-            summary.append(f"{sid} 状态未知")
+        kind = "模拟器" if device["is_emulator"] else "实体手机"
+        ok_any = True
+        summary.append(f"{kind} {sid} 已连接 ✓")
     status = "ok" if ok_any else "warn"
     msg = "；".join(summary)
-    actions = [] if ok_any else ["在手机弹窗上点击「允许 USB 调试」后点「重新检测」"]
+    actions = [] if ok_any else ["确认设备已启动且 ADB 状态为 device 后重新检测"]
     return (status, msg, actions)
 
 
 def check_emulator():
+    # A running AVD is sufficient for巡检，即使 emulator CLI 不在 PATH 中（例如
+    # 由 Android Studio 或隐私检测工具单独启动的模拟器）。
+    adb, _ = find_adb()
+    if adb:
+        code, out = _run(f'"{adb}" devices -l')
+        active = [d["serial"] for d in parse_adb_devices(out)
+                  if d["state"] == "device" and d["is_emulator"]]
+        if active:
+            return ("ok", f"检测到运行中的 Android 模拟器：{'、'.join(active)}", [])
     emu = shutil.which("emulator")
     if emu and os.path.exists(emu):
         code, out = _run(f'"{emu}" -list-avds', timeout=10)
@@ -190,11 +187,11 @@ def check_runtime_storage():
 
 
 def run_all(cfg=None):
-    """检测手机渠道复核所需环境，不混入桌面 APK 解析或模拟器工具。"""
+    """检测 Android 市场客户端复核所需环境，不混入桌面 APK 解析。"""
     checks = [
         ("Python 依赖", check_deps),
         ("ADB 工具", check_adb),
-        ("USB 安卓测试机", check_usb_phone),
+        ("Android 测试设备", check_usb_phone),
     ]
     results = []
     for step, (name, fn) in enumerate(checks, 1):
@@ -205,7 +202,7 @@ def run_all(cfg=None):
 
 
 def run_doctor():
-    """完整部署诊断；网页中的 USB 检测仍只展示手机相关项目。"""
+    """完整部署诊断；网页中同时展示实体手机和模拟器。"""
     checks = [
         ("运行系统", check_platform),
         ("Python 版本", check_python_runtime),
@@ -213,7 +210,8 @@ def run_doctor():
         ("APK 解析依赖", check_apk_verify),
         ("中文搜索依赖", check_pinyin),
         ("ADB 工具", check_adb),
-        ("USB 安卓测试机", check_usb_phone),
+        ("Android 测试设备", check_usb_phone),
+        ("Android 模拟器", check_emulator),
         ("OCR 环境", check_tesseract),
         ("运行数据目录", check_runtime_storage),
     ]

@@ -12,12 +12,12 @@ DEFAULT_MARKETS = [
     ("huawei",  "华为应用市场", "huawei",  "official",     "官方网页接口自动采集"),
     ("xiaomi",  "小米应用商店", "xiaomi",  "official",     "app.mi.com 免登录"),
     ("yyb",     "应用宝",       "yyb",     "official",     "sj.qq.com 免登录"),
-    ("oppo",    "OPPO 软件商店", "oppo",    "official",     "USB 手机客户端采集"),
-    ("vivo",    "vivo 应用商店", "vivo",    "official",     "USB 手机客户端采集"),
+    ("oppo",    "OPPO 软件商店", "oppo",    "official",     "Android 设备客户端采集"),
+    ("vivo",    "vivo 应用商店", "vivo",    "official",     "Android 设备客户端采集"),
     ("samsung", "三星 Galaxy Store", "samsung", "official", "官方网页接口自动采集"),
-    ("baidu",   "百度手机助手", "baidu",   "official",     "官方网页接口自动采集"),
+    ("baidu",   "百度手机助手", "baidu",   "official",     "Android 客户端优先，网页备用"),
     ("meizu",   "魅族应用商店", "meizu",   "official",     "官方网页接口自动采集"),
-    ("honor",   "荣耀应用市场", "honor",   "official",     "USB 手机客户端采集"),
+    ("honor",   "荣耀应用市场", "honor",   "official",     "Android 设备客户端采集"),
     ("appstore", "Apple App Store", "appstore", "official", "Apple 公开搜索接口，覆盖 iOS"),
     ("qihu360", "360 手机助手", "qihu360", "official", "360 官方网页接口自动采集"),
 ]
@@ -40,7 +40,10 @@ PACKAGE_READY_MARKETS = {
     "huawei", "xiaomi", "yyb", "samsung", "baidu", "meizu",
     "appstore", "qihu360",
 }
-DEVICE_READY_MARKETS = {"oppo", "vivo", "honor"}
+# These clients need an explicit one-time first-run confirmation before the
+# device-side adapter can operate. Baidu uses the client as the preferred local
+# evidence path when installed; its consent gate is tracked separately.
+DEVICE_READY_MARKETS = {"oppo", "vivo", "honor", "baidu"}
 
 
 def load_config() -> dict:

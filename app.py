@@ -11,7 +11,7 @@ from pathlib import Path
 from flask import (Flask, render_template, request, jsonify, send_file, redirect,
                    url_for, flash, Response)
 import core.db as db
-from config import load_config, BASE_DIR
+from config import load_config, BASE_DIR, market_display_name
 from core.checker import run_check, run_b_check
 from core.version import version_key
 
@@ -37,7 +37,7 @@ def _artifact_capabilities(apps, markets, result_map):
     from core.artifacts import _allowed_url
 
     installed_packages = set()
-    phone_detail = "未连接可用的实体手机"
+    device_detail = "未连接可用的 Android 测试设备"
     needs_phone_probe = any(
         a.get("platform") == "android" and m.get("platform") == "android"
         and not result_map.get((m["id"], a["id"]), {}).get("download_url")
@@ -47,18 +47,17 @@ def _artifact_capabilities(apps, markets, result_map):
         try:
             from executors.adb_device import AdbDevice
             dev = AdbDevice()
-            ready, phone_detail = dev.ready()
-            if ready and dev.serial and not str(dev.serial).startswith("emulator-"):
+            ready, device_detail = dev.ready()
+            if ready and dev.serial:
                 installed_packages = {
                     line.removeprefix("package:").strip()
                     for line in dev.shell("pm list packages").splitlines()
                     if line.startswith("package:")
                 }
-                phone_detail = f"实体手机 {dev.serial} 已连接"
-            elif ready:
-                phone_detail = "当前仅连接模拟器，不能作为实体市场安装包来源"
+                device_kind = "模拟器" if str(dev.serial).startswith("emulator-") else "实体手机"
+                device_detail = f"{device_kind} {dev.serial} 已连接"
         except Exception as exc:
-            phone_detail = f"暂时无法读取手机状态：{type(exc).__name__}"
+            device_detail = f"暂时无法读取 Android 测试设备状态：{type(exc).__name__}"
 
     capabilities = {}
     for app_item in apps:
@@ -84,15 +83,15 @@ def _artifact_capabilities(apps, markets, result_map):
                 }
             elif app_item.get("package_name") in installed_packages:
                 capabilities[key] = {
-                    "method": "device", "label": "从手机提取并校验 APK",
-                    "detail": (f"{phone_detail}，且已安装目标应用；只提取现有安装包，"
+                    "method": "device", "label": "从设备提取并校验 APK",
+                    "detail": (f"{device_detail}，且已安装目标应用；只提取现有安装包，"
                                "不会自动搜索、下载或安装。"),
                 }
             else:
                 capabilities[key] = {
                     "method": "none",
                     "detail": ("该渠道当前没有官方网页 APK 直链。"
-                               f"{phone_detail}；需先在实体手机安装目标应用后才能提取校验。"),
+                               f"{device_detail}；需先在 Android 测试设备安装目标应用后才能提取校验。"),
                 }
     return capabilities
 
@@ -561,15 +560,15 @@ def api_env_check():
     results = run_all(load_config())
     by_name = {r["name"]: r for r in results}
     web_ready = by_name.get("Python 依赖", {}).get("status") == "ok"
-    phone_required = ("Python 依赖", "ADB 工具", "USB 安卓测试机")
-    phone_ready = all(by_name.get(name, {}).get("status") == "ok" for name in phone_required)
+    device_required = ("Python 依赖", "ADB 工具", "Android 测试设备")
+    device_ready = all(by_name.get(name, {}).get("status") == "ok" for name in device_required)
     profile = {}
     market_clients = []
 
-    # A connected phone is only useful when at least one phone-side market
-    # client is installed. Report the actual clients instead of mixing this
+    # A connected Android test device is only useful when at least one
+    # device-side market client is installed. Report actual clients instead of mixing this
     # optional tool with desktop APK parsing dependencies.
-    if phone_ready:
+    if device_ready:
         try:
             from executors.device import DeviceExecutor
             from config import DEVICE_READY_MARKETS
@@ -582,34 +581,78 @@ def api_env_check():
             profile = report.get("device") or {}
             market_clients = report.get("markets") or []
             model = " ".join(filter(None, (profile.get("brand"), profile.get("model"))))
-            message = (f"{model or 'Android 手机'} · Android {profile.get('android') or '未知'}；"
+            device_label = "模拟器" if str(profile.get("serial") or "").startswith("emulator-") else "实体手机"
+            message = (f"{device_label} {model or 'Android 设备'} · Android {profile.get('android') or '未知'}；"
                        f"已安装市场客户端：{'、'.join(x['market_name'] for x in installed) or '无'}")
             has_market_client = bool(installed)
             results.append({
                 "step": len(results) + 1,
-                "name": "手机应用市场客户端",
+                "name": "设备应用市场客户端",
                 "status": "ok" if ready and has_market_client else "warn",
                 "message": message,
                 "actions": (["缺少：" + "、".join(x["market_name"] for x in missing)] if missing else [])
                            + ([] if has_market_client else [
-                               "需要复核哪个手机渠道，就先在手机上安装该渠道的官方应用市场客户端"
+                               "需要复核哪个渠道，就先在该 Android 测试设备上安装对应的官方市场客户端"
                            ]),
             })
         except Exception as exc:
             results.append({
                 "step": len(results) + 1,
-                "name": "手机应用市场客户端",
+                "name": "设备应用市场客户端",
                 "status": "warn",
-                "message": f"暂时无法读取已安装市场客户端：{exc}",
-                "actions": ["重新连接手机后再次检测"],
+                    "message": f"暂时无法读取已安装市场客户端：{exc}",
+                    "actions": ["重新连接 Android 测试设备后再次检测"],
             })
     return jsonify({"ok": True, "ready": web_ready, "web_ready": web_ready,
-                    "phone_ready": phone_ready,
-                    # Backward-compatible alias for old local pages.
-                    "device_ready": phone_ready,
+                    "phone_ready": device_ready,
+                    # Backward-compatible aliases for old local pages.
+                    "device_ready": device_ready,
+                    "android_device_ready": device_ready,
                     "device_profile": profile,
                     "market_clients": market_clients,
                     "steps": results})
+
+
+@app.get("/api/device/market/bootstrap")
+def api_market_bootstrap_status():
+    """Read one-time market-client initialization state without opening apps."""
+    from executors.device import DeviceExecutor
+    market_id = str(request.args.get("market_id") or "").strip()
+    executor = DeviceExecutor()
+    ids = [market_id] if market_id else ["oppo", "vivo", "honor", "baidu"]
+    states = []
+    for item in ids:
+        if item not in ("oppo", "vivo", "honor", "baidu"):
+            continue
+        try:
+            state = executor.market_initialization_status(item)
+        except Exception as exc:
+            state = {"status": "need_review", "detail": f"读取初始化状态失败：{type(exc).__name__}: {exc}"}
+        state["market_id"] = item
+        state["market_name"] = market_display_name(item)
+        states.append(state)
+    return jsonify({"ok": True, "markets": states})
+
+
+@app.post("/api/device/market/bootstrap")
+def api_market_bootstrap():
+    """Explicitly confirm a market client's first-run agreement once."""
+    data = request.get_json(silent=True) or {}
+    market_id = str(data.get("market_id") or "").strip()
+    if market_id not in ("oppo", "vivo", "honor", "baidu"):
+        return jsonify({"ok": False, "msg": "仅支持 OPPO、vivo、荣耀、百度市场客户端初始化"}), 400
+    if data.get("confirm") is not True:
+        return jsonify({"ok": False, "msg": "需要明确确认一次市场客户端协议后才能初始化"}), 400
+    from executors.device import DeviceExecutor
+    try:
+        result = DeviceExecutor().initialize_market(
+            market_id, confirm=True,
+            screenshot_dir=str(BASE_DIR / "data" / "screenshots"),
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "status": "error",
+                        "msg": f"初始化失败：{type(exc).__name__}: {exc}"}), 500
+    return jsonify(result), (200 if result.get("ok") else 409)
 
 
 # ---------- 报表导出 ----------
@@ -650,7 +693,7 @@ def api_report_markdown():
                 st = {"ok": "已发现", "offline": "未发现",
                       "not_published": "未发现",
                       "web_limited": "查询受限",
-                      "device_unavailable": "未完成：手机未连接",
+                      "device_unavailable": "未完成：Android 设备未连接",
                       "market_app_missing": "未完成：市场未安装",
                       "login_required": "未完成：需登录或授权", "need_review": "待确认",
                       "package_mismatch": "发现同名错包应用",
@@ -747,7 +790,7 @@ def api_check_b_run():
     if do_download:
         return jsonify({
             "ok": False,
-            "msg": ("已禁用手机端按名称自动下载，避免误下同名应用。"
+            "msg": ("已禁用 Android 设备端按名称自动下载，避免误下同名应用。"
                     "请使用报表中的‘获取并校验 APK’。"),
         }), 410
     try:

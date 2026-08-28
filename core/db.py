@@ -118,6 +118,18 @@ CREATE TABLE IF NOT EXISTS schema_meta (
     key TEXT PRIMARY KEY,
     value TEXT DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS market_initializations (
+    device_serial TEXT NOT NULL,
+    market_id TEXT NOT NULL,
+    package_name TEXT NOT NULL,
+    version_name TEXT DEFAULT '',
+    version_code TEXT DEFAULT '',
+    consented_at TEXT DEFAULT (datetime('now','localtime')),
+    screenshot_before TEXT DEFAULT '',
+    screenshot_after TEXT DEFAULT '',
+    detail TEXT DEFAULT '',
+    PRIMARY KEY (device_serial, market_id, package_name, version_name, version_code)
+);
 """
 
 

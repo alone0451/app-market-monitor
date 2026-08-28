@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """应用市场版本巡检系统 · 环境检测（CLI 版）
 用法: python scripts/check_env.py
-说明: 检查 macOS 部署、Python、ADB、手机、OCR 和运行目录。
+说明: 检查 macOS 部署、Python、ADB、Android 测试设备、OCR 和运行目录。
 """
 import sys
 from pathlib import Path

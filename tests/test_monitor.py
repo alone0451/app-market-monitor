@@ -19,7 +19,7 @@ from core.discovery import (_app_search_terms, _company_search_terms, _relevance
                             search_apps)
 from core.checker import normalize_published_at
 from core.download_policy import decide_download
-from core.env_check import find_adb, parse_adb_devices
+from core.env_check import check_usb_phone, find_adb, parse_adb_devices
 from core import apk_verify
 from core.artifacts import (_device_extract_artifact, _download_with_resume,
                             _find_cached_artifact, _fresh_collect)
@@ -693,6 +693,17 @@ adb: failed to check server version: cannot connect to daemon
 """
         self.assertEqual([], parse_adb_devices(output))
 
+    @patch("core.env_check._run")
+    @patch("core.env_check.find_adb", return_value=("/usr/local/bin/adb", "test"))
+    def test_emulator_is_accepted_as_android_test_device(self, _find, run):
+        run.return_value = (0, "List of devices attached\n"
+                            "emulator-5554 device product:sdk_phone_arm64 "
+                            "model:Android_SDK device:generic_arm64\n")
+        status, message, actions = check_usb_phone()
+        self.assertEqual("ok", status)
+        self.assertIn("模拟器 emulator-5554", message)
+        self.assertEqual([], actions)
+
 
 class YybDeviceDriverTests(unittest.TestCase):
     def test_ascii_query_is_preserved(self):
@@ -861,7 +872,7 @@ class DeviceDownloadVerificationTests(unittest.TestCase):
                 "yyb", "com.example.finance", app_name="示例金融"
             )
         self.assertEqual("unsafe_device_download_disabled", result["status"])
-        self.assertIn("已禁用手机端按名称自动搜索", result["detail"])
+        self.assertIn("已禁用 Android 设备端按名称自动搜索", result["detail"])
         executor.dev.start_app.assert_not_called()
 
 
@@ -895,16 +906,17 @@ class ApkVerificationTests(unittest.TestCase):
 
 class DeviceExtractMessageTests(unittest.TestCase):
     @patch("executors.device.DeviceExecutor")
-    def test_emulator_only_reports_no_phone(self, executor_cls):
+    def test_emulator_can_be_used_as_device_artifact_source(self, executor_cls):
         dev = MagicMock()
         dev.serial = "emulator-5554"
+        dev.shell.return_value = ""
         executor_cls.return_value.dev = dev
         executor_cls.return_value.check_ready.return_value = (True, "设备 emulator-5554")
         result = _device_extract_artifact(
             {"package_name": "com.example.finance", "id": 1},
             {"id": "xiaomi"}, "/tmp",
         )
-        self.assertEqual("device_unavailable", result["status"])
+        self.assertEqual("app_not_installed", result["status"])
         self.assertIn("模拟器", result["detail"])
 
     @patch("executors.device.DeviceExecutor")
@@ -1143,7 +1155,7 @@ class AppApiTests(unittest.TestCase):
                 db.init_db()
                 client = app.test_client()
                 page = client.get("/config").get_data(as_text=True)
-                self.assertIn("USB 手机渠道复核（可选）", page)
+                self.assertIn("Android 设备渠道复核（可选）", page)
                 self.assertIn("不会自动下载或安装目标 App", page)
                 self.assertNotIn("每周自动巡检", page)
                 self.assertNotIn("sched-enabled", page)
@@ -1165,7 +1177,7 @@ class AppApiTests(unittest.TestCase):
         run_all.return_value = [
             {"step": 1, "name": "Python 依赖", "status": "ok", "message": "ok", "actions": []},
             {"step": 2, "name": "ADB 工具", "status": "ok", "message": "ok", "actions": []},
-            {"step": 3, "name": "USB 安卓测试机", "status": "ok", "message": "ok", "actions": []},
+            {"step": 3, "name": "Android 测试设备", "status": "ok", "message": "ok", "actions": []},
         ]
         compatibility.return_value = {
             "ready": True,
@@ -1179,7 +1191,7 @@ class AppApiTests(unittest.TestCase):
         }
         result = app.test_client().get("/api/env/check").get_json()
         self.assertTrue(result["phone_ready"])
-        self.assertEqual("手机应用市场客户端", result["steps"][-1]["name"])
+        self.assertEqual("设备应用市场客户端", result["steps"][-1]["name"])
         self.assertIn("已安装市场客户端：OPPO 软件商店、vivo 应用商店、荣耀应用市场",
                       result["steps"][-1]["message"])
         self.assertNotIn("oppo, vivo, honor", result["steps"][-1]["message"])

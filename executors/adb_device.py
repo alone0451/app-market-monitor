@@ -35,7 +35,7 @@ class AdbDevice:
 
     def ready(self) -> tuple[bool, str]:
         if not self.serial:
-            return False, "未检测到可用设备（USB 手机或模拟器）"
+            return False, "未检测到可用 Android 设备（实体手机或模拟器）"
         code, out = _run([self.adb, "-s", self.serial, "shell", "echo", "ok"])
         return ("ok" in out), f"设备 {self.serial}"
 
@@ -63,7 +63,7 @@ class AdbDevice:
                 power, re.I,
             ))
         if not awake:
-            return False, "手机屏幕未点亮，请点亮并解锁手机后重试该渠道"
+            return False, "Android 设备屏幕未点亮，请点亮并解锁后重试该渠道"
 
         trust = self.shell("dumpsys trust")
         window = self.shell("dumpsys window policy")
@@ -73,7 +73,7 @@ class AdbDevice:
             trust + "\n" + window, re.I,
         ))
         if locked:
-            return False, ("手机已锁定。请手工解锁并在单渠道查询完成前保持亮屏；"
+            return False, ("手机已锁定（Android 设备可能是实体手机或模拟器）。请手工解锁并在单渠道查询完成前保持亮屏；"
                            "系统不会尝试输入密码或绕过锁屏。")
         return True, f"设备 {self.serial} 已亮屏并解锁"
 
@@ -91,10 +91,25 @@ class AdbDevice:
         return code == 0
 
     def start_app(self, package: str, activity: str = ""):
+        if not activity:
+            # ``monkey -p`` is unreliable for vendor clients: it may report
+            # success while leaving a previous market (or its consent dialog)
+            # in the foreground. Resolve the launcher component first and use
+            # an explicit am start so the selected package is verifiable.
+            resolved = self.shell(
+                "cmd package resolve-activity --brief "
+                f"-a android.intent.action.MAIN -c android.intent.category.LAUNCHER {package}"
+            )
+            candidates = [line.strip() for line in resolved.splitlines()
+                          if line.strip().startswith(package + "/")]
+            if candidates:
+                activity = candidates[-1]
+        if activity and not activity.startswith(package + "/"):
+            activity = package + "/" + activity.lstrip(".")
         if activity:
-            self.shell(f"am start -n {package}/{activity}")
+            self.shell(f"am start -W -n {activity}")
         else:
-            # 通过 monkey 或 am start 主 Activity
+            # Last-resort fallback for clients without a resolvable launcher.
             self.shell(f"monkey -p {package} -c android.intent.category.LAUNCHER 1")
         time.sleep(4)
 
