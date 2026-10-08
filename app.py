@@ -11,7 +11,8 @@ from pathlib import Path
 from flask import (Flask, render_template, request, jsonify, send_file, redirect,
                    url_for, flash, Response)
 import core.db as db
-from config import load_config, BASE_DIR, market_display_name
+from config import (BASE_DIR, device_mode, load_config, market_display_name,
+                    save_config)
 from core.checker import run_check, run_b_check
 from core.version import version_key
 
@@ -293,7 +294,10 @@ def wizard_page():
 def results():
     snapshot = _report_snapshot()
     cfg = load_config()
-    return render_template("results.html", cfg=cfg, **snapshot)
+    # 保留启动巡检返回的 run 参数，让报表首屏立即显示后台任务状态；
+    # 不把“已跳转到报表”误认为“任务已完成”。
+    run_id = request.args.get("run", "").strip()
+    return render_template("results.html", cfg=cfg, run_id=run_id, **snapshot)
 
 
 @app.get("/device/oppo-bridge")
@@ -330,7 +334,8 @@ def apps_page():
     )]
     return render_template("apps.html", apps=apps, markets=markets,
                            bindings=bindings,
-                           app_platforms={a.get("platform") or "android" for a in apps})
+                           app_platforms={a.get("platform") or "android" for a in apps},
+                           device_mode=device_mode(load_config()))
 
 
 @app.route("/settings")
@@ -613,6 +618,17 @@ def api_env_check():
                     "steps": results})
 
 
+@app.post("/api/device/emulator/start")
+def api_emulator_start():
+    """Start the project-managed Android emulator from the web UI."""
+    from core.env_check import start_android_emulator
+    result = start_android_emulator()
+    status = result.get("status")
+    if not result.get("ok"):
+        return jsonify(result), 409
+    return jsonify(result)
+
+
 @app.get("/api/device/market/bootstrap")
 def api_market_bootstrap_status():
     """Read one-time market-client initialization state without opening apps."""
@@ -754,7 +770,27 @@ def api_save_settings():
 
 @app.get("/api/config")
 def api_get_config():
-    return jsonify({"scheduled_monitoring": False})
+    return jsonify({"scheduled_monitoring": False,
+                    "device_mode": device_mode(load_config())})
+
+
+@app.route("/api/device/mode", methods=["GET", "POST"])
+def api_device_mode():
+    """Read or persist the Android device type used by device-side checks."""
+    from config import DEVICE_MODES
+    cfg = load_config()
+    if request.method == "GET":
+        return jsonify({"ok": True, "device_mode": device_mode(cfg)})
+    data = request.get_json(silent=True) or {}
+    selected = str(data.get("device_mode") or "").strip().lower()
+    if selected not in DEVICE_MODES:
+        return jsonify({"ok": False, "msg": "设备类型只能选择模拟器或物理机"}), 400
+    cfg["device"] = dict(cfg.get("device") or {})
+    cfg["device"]["mode"] = selected
+    save_config(cfg)
+    label = "Android 模拟器" if selected == "emulator" else "实体 Android 手机"
+    return jsonify({"ok": True, "device_mode": selected,
+                    "detail": f"已选择{label}；后续设备端巡检只会使用该类型设备"})
 
 
 # ---------- 巡检 ----------

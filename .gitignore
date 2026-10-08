@@ -37,3 +37,24 @@ htmlcov/
 # Historical local design drafts are not part of the distributable product
 DESIGN_V2.md
 应用市场版本巡检系统-架构设计.html
+
+# Extra local evidence, temporary exports and developer notes
+output/
+uploads/
+cache/
+.cache/
+logs/
+artifacts/
+screenshots/
+.runtime/
+.workbuddy/
+*.pcap
+*.pcapng
+*.har
+*.pdf
+*.docx
+*.pptx
+*.xlsx
+*.txt
+!requirements*.txt
+*.zip

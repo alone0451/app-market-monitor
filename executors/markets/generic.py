@@ -165,6 +165,32 @@ def _ocr_version(path: str) -> tuple[str, str]:
     return parse_version(text.splitlines()), text
 
 
+def _ocr_entities(path: str) -> tuple[dict[str, str], str]:
+    """Extract developer/operator labels from a detail screenshot.
+
+    Vendor market clients sometimes render company rows as canvas/WebView
+    pixels without exposing them in the accessibility tree.  Entity OCR is a
+    fallback only; the UI tree remains the primary evidence source.
+    """
+    tesseract = shutil.which("tesseract")
+    empty = {"developer": "", "operator": ""}
+    if not tesseract or not path:
+        return empty, ""
+    try:
+        run = subprocess.run(
+            [tesseract, path, "stdout", "-l", "chi_sim+eng", "--psm", "6"],
+            shell=False, capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return empty, ""
+    text = (run.stdout or "") + (run.stderr or "")
+    lines = text.splitlines()
+    entities = parse_entities(lines)
+    if not entities["developer"]:
+        entities["developer"] = find_company_name(lines)
+    return entities, text
+
+
 class GenericStoreDriver:
     market_id = ""
     package = ""
@@ -230,10 +256,19 @@ class GenericStoreDriver:
             if not node.get("enabled", True):
                 continue
             label = f"{node.get('text', '')} {node.get('desc', '')}".lower()
+            compact_label = label.strip()
             rid = node.get("rid", "").lower()
             score = 0
-            if any(word.lower() in label for word in text_words):
-                score += 8
+            for word in text_words:
+                normalized = word.lower()
+                if normalized == compact_label:
+                    # Prefer a standalone action such as “立即开启” over a
+                    # clickable policy sentence that merely contains “同意”.
+                    score += 14
+                    break
+                if normalized in label:
+                    score += 8
+                    break
             if any(word.lower() in rid for word in id_words):
                 score += 5
             if editable and "edittext" in node.get("class", "").lower():
@@ -308,6 +343,33 @@ class GenericStoreDriver:
                 False, f"{self.display_name}在当前模拟器地区不可用，无法打开市场详情",
                 screenshot_dir, status="region_unavailable",
             )
+
+        def target_identity_visible(current_nodes):
+            """Require target identity before trusting a version field.
+
+            Some market clients keep the previous detail page on screen when a
+            package deep-link is rejected.  That stale page still contains a
+            perfectly valid version number, so version-only parsing can assign
+            another app's version to the requested package.  The title/package
+            must be visible in the fresh UI dump as an additional guard.
+            """
+            values = [value.strip() for node in current_nodes
+                      for value in (node.get("text", ""), node.get("desc", ""))
+                      if value and value.strip()]
+            if app_name and any(app_name in value for value in values):
+                return True
+            return bool(package_name and any(package_name in value for value in values))
+
+        if not target_identity_visible(nodes):
+            # Give a slow-rendering detail page a short grace period, but never
+            # accept a version from a page whose identity is still unknown.
+            for _ in range(3):
+                time.sleep(1.5)
+                nodes = self.dev.nodes(self.dev.dump_ui())
+                if target_identity_visible(nodes):
+                    break
+            else:
+                return None
 
         def target_is_primary(current_nodes):
             # A recommendation far below the fold must never be mistaken for the
@@ -458,7 +520,8 @@ class GenericStoreDriver:
 
             if not self.allow_pinyin_fallback:
                 reason = (f"{self.display_name}客户端未能按包名打开“{app_name}”详情；"
-                          "为避免拼音召回错误，已停止自动搜索，请升级市场客户端后重试")
+                          "当前客户端未提供可验证的包名详情入口，暂不能据此判定未上架；"
+                          "可在客户端手工搜索后单独复核")
                 return self._result(False, reason, screenshot_dir)
 
             # Compatibility fallback for old market clients that do not support
@@ -507,9 +570,10 @@ class GenericStoreDriver:
                                     status=self._status_for_reason(reason))
             hit = self._best_node(nodes, text_words=(app_name,), id_words=())
             if not hit:
+                status = "offline" if self.market_id == "vivo" else "need_review"
                 return self._result(
-                    False, f"{self.display_name}未精确召回“{app_name}”（搜索词 {query}）",
-                    screenshot_dir,
+                    False, f"{self.display_name}客户端搜索结果中未找到“{app_name}”（搜索词 {query}），判定为未发现",
+                    screenshot_dir, status=status,
                 )
             self.dev.tap(hit["cx"], hit["cy"])
             time.sleep(3)
@@ -520,6 +584,17 @@ class GenericStoreDriver:
             if blocked:
                 status = "login_required" if "登录" in reason else "need_review"
                 return self._result(False, reason, screenshot_dir, status=status)
+            values = [value.strip() for node in nodes
+                      for value in (node.get("text", ""), node.get("desc", ""))
+                      if value and value.strip()]
+            if not (any(app_name in value for value in values) or
+                    any(package_name in value for value in values)):
+                return self._result(
+                    False,
+                    f"{self.display_name}详情页未能确认目标应用“{app_name}”（包名 {package_name}），"
+                    "已忽略页面中的版本字段，避免误采信上一条详情",
+                    screenshot_dir,
+                )
             texts = [value for node in nodes for value in (node.get("text", ""), node.get("desc", ""))]
             version = parse_version(texts)
             if not version:
@@ -802,6 +877,85 @@ class VivoDeviceDriver(GenericStoreDriver):
     market_id = "vivo"
     package = "com.bbk.appstore"
     display_name = "vivo 应用商店"
+    # 包名深链在部分 vivo 客户端不可用。设备端没有稳定的中文剪贴板桥
+    # 时不要退回拼音搜索：拼音召回可能打开同名/近似名页面，造成版本误归属。
+    # 深链失败后交给报告标记“待复核”，由用户在客户端使用中文搜索确认。
+    allow_pinyin_fallback = False
+
+    def _read_opened_detail(self, package_name: str, app_name: str,
+                            screenshot_dir: str, nodes: list[dict]):
+        """Read vivo主体字段, including rows rendered below the first fold.
+
+        vivo versions commonly expose the version row in the accessibility tree
+        before the developer row is rendered.  The generic reader would return
+        at that point, so this wrapper keeps a few extra page samples and uses
+        screenshot OCR only when the developer is still absent.  An absent
+        operator is retained as an explicit market limitation in the evidence
+        text rather than silently looking like a parser failure.
+        """
+        result = super()._read_opened_detail(
+            package_name, app_name, screenshot_dir, nodes,
+        )
+        if result is None:
+            return None
+
+        entities = {
+            "developer": str(result.get("developer") or "").strip(),
+            "operator": str(result.get("operator") or "").strip(),
+        }
+        scrolled = False
+        # Keep sampling after the generic reader has found a valid version.
+        # Company/qualification rows are often one or two screens below it.
+        for _ in range(4):
+            if entities["developer"] and entities["operator"]:
+                break
+            current = self.dev.nodes(self.dev.dump_ui())
+            texts = [value for node in current
+                     for value in (node.get("text", ""), node.get("desc", ""))
+                     if value]
+            parsed = parse_entities(texts)
+            if not parsed["developer"]:
+                parsed["developer"] = find_company_name(texts)
+            for key in ("developer", "operator"):
+                if not entities[key] and parsed[key]:
+                    entities[key] = parsed[key]
+            if entities["developer"] and entities["operator"]:
+                break
+            self.dev.shell("input swipe 540 1700 540 850 420")
+            time.sleep(1.2)
+            scrolled = True
+
+        if scrolled:
+            refreshed = self._capture(screenshot_dir)
+            if refreshed:
+                result["screenshot"] = refreshed
+
+        # Some vivo builds draw the主体 rows in a WebView/canvas.  OCR is a
+        # conservative fallback and is never used to confirm the app identity.
+        # Use the refreshed post-scroll screenshot so lower-fold rows are in it.
+        if (not entities["developer"] or not entities["operator"]) and result.get("screenshot"):
+            ocr_entities, _ = _ocr_entities(result["screenshot"])
+            for key in ("developer", "operator"):
+                if not entities[key] and ocr_entities.get(key):
+                    entities[key] = ocr_entities[key]
+        result.update(entities)
+        if result.get("ok"):
+            if entities["developer"]:
+                result["detail"] = (result.get("detail", "") +
+                                     f"；开发者/发布者：{entities['developer']}")
+            else:
+                result["detail"] = (result.get("detail", "") +
+                                     "；开发者/发布者：市场未提供（vivo详情页未展示）")
+            if entities["operator"]:
+                result["detail"] = (result.get("detail", "") +
+                                     f"；运营者/主办者：{entities['operator']}")
+            else:
+                result["detail"] = (result.get("detail", "") +
+                                     "；运营者/主办者：市场未提供（vivo详情页未展示）")
+        elif not entities["developer"]:
+            result["detail"] = (result.get("detail", "") +
+                                 "；开发者：当前未取得有效详情字段")
+        return result
 
 
 class HonorDeviceDriver(GenericStoreDriver):

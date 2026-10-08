@@ -11,6 +11,118 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 PORTABLE_ADB = BASE / ".tools" / "android" / "platform-tools" / "adb"
+_EMULATOR_PROCESS = None
+
+
+def _emulator_candidates():
+    """Return emulator binaries that can be used by the local one-click launcher."""
+    candidates = []
+    configured = os.environ.get("AMM_EMULATOR_BIN", "").strip()
+    if configured:
+        candidates.append(Path(configured).expanduser())
+    sdk_roots = []
+    for value in (os.environ.get("ANDROID_SDK_ROOT"), os.environ.get("ANDROID_HOME")):
+        if value:
+            sdk_roots.append(Path(value).expanduser())
+    # The market monitor reuses the SDK provisioned by the privacy checker so
+    # users do not need to install Android Studio or run a command manually.
+    sibling_sdk = BASE.parent / "app_privacy_checker" / ".android-sdk"
+    sdk_roots.append(sibling_sdk)
+    for root in sdk_roots:
+        candidates.append(root / "emulator" / "emulator")
+    path_emulator = shutil.which("emulator")
+    if path_emulator:
+        candidates.append(Path(path_emulator))
+    seen = set()
+    available = []
+    for item in candidates:
+        key = str(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        if item.exists() and os.access(item, os.X_OK):
+            available.append(item)
+    return available
+
+
+def _emulator_avd_home(emulator: Path) -> Path:
+    configured = os.environ.get("ANDROID_AVD_HOME", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    sibling = BASE.parent / "app_privacy_checker" / ".android-avd"
+    if sibling.exists():
+        return sibling
+    return Path.home() / ".android" / "avd"
+
+
+def _connected_emulators(adb: str) -> list[str]:
+    code, output = _run(f'"{adb}" devices -l')
+    if code != 0:
+        return []
+    return [d["serial"] for d in parse_adb_devices(output)
+            if d["state"] == "device" and d["is_emulator"]]
+
+
+def start_android_emulator() -> dict:
+    """Start a project-managed Android AVD for device-side market checks.
+
+    This is intentionally limited to an existing local AVD: it never downloads
+    an image, installs an APK, changes accounts, or bypasses a lock screen.
+    """
+    global _EMULATOR_PROCESS
+    adb, _ = find_adb()
+    if not adb:
+        return {"ok": False, "status": "adb_unavailable",
+                "detail": "未找到 ADB，无法启动 Android 模拟器"}
+    connected = _connected_emulators(adb)
+    if connected:
+        return {"ok": True, "status": "already_running", "serials": connected,
+                "detail": f"Android 模拟器已连接：{'、'.join(connected)}"}
+    if _EMULATOR_PROCESS is not None and _EMULATOR_PROCESS.poll() is None:
+        return {"ok": True, "status": "starting",
+                "detail": "Android 模拟器正在启动，请稍候…"}
+
+    emulator_paths = _emulator_candidates()
+    if not emulator_paths:
+        return {"ok": False, "status": "emulator_unavailable",
+                "detail": "未找到可用的 Android 模拟器程序"}
+    emulator = emulator_paths[0]
+    avd_home = _emulator_avd_home(emulator)
+    env = os.environ.copy()
+    env.update({"ANDROID_SDK_ROOT": str(emulator.parent.parent),
+                "ANDROID_HOME": str(emulator.parent.parent),
+                "ANDROID_AVD_HOME": str(avd_home)})
+    try:
+        listed = subprocess.run([str(emulator), "-list-avds"], env=env,
+                                capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"ok": False, "status": "emulator_unavailable",
+                "detail": f"读取模拟器列表失败：{type(exc).__name__}"}
+    avds = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+    if listed.returncode != 0 or not avds:
+        return {"ok": False, "status": "avd_unavailable",
+                "detail": "未找到可启动的 Android AVD"}
+    preferred = os.environ.get("AMM_AVD_NAME", "MarketMonitor_API29").strip()
+    avd_name = preferred if preferred in avds else avds[0]
+
+    log_path = BASE / "data" / "emulator.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        log_handle = log_path.open("a", encoding="utf-8")
+        _EMULATOR_PROCESS = subprocess.Popen(
+            [str(emulator), "-avd", avd_name, "-no-window", "-no-audio",
+             "-no-boot-anim", "-no-metrics", "-gpu", "swiftshader_indirect",
+             "-prop", "persist.sys.locale=zh-CN", "-prop", "ro.product.country=CN"],
+            env=env, stdout=log_handle, stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        # The child owns the file descriptor after Popen returns.
+        log_handle.close()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"ok": False, "status": "start_failed",
+                "detail": f"启动 Android 模拟器失败：{type(exc).__name__}"}
+    return {"ok": True, "status": "starting", "avd": avd_name,
+            "detail": f"正在启动 Android 模拟器 {avd_name}，通常需要几十秒…"}
 
 
 def _run(cmd, timeout=20):
@@ -90,8 +202,12 @@ def check_adb():
              "也可以自行安装 Android Studio 或执行 brew install android-platform-tools"])
 
 
-def check_usb_phone():
-    """检查可执行市场客户端复核的 Android 测试设备（实体机或模拟器）。"""
+def check_usb_phone(device_mode: str = "any"):
+    """检查符合设备类型选择的 Android 测试设备。
+
+    ``any`` 保留给底层诊断和兼容旧调用；网页巡检会传入 emulator 或
+    physical，避免用户选择实体机后仍误用模拟器（反之亦然）。
+    """
     adb, _ = find_adb()
     if not adb:
         return ("warn", "跳过（ADB 未安装，先解决 ADB 再检测 Android 设备）", [])
@@ -103,11 +219,47 @@ def check_usb_phone():
                  "执行项目内 .tools/android/platform-tools/adb kill-server 后重新连接 Android 设备"])
     devices = parse_adb_devices(out)
     usable = [d for d in devices if d["state"] == "device"]
+    if device_mode == "emulator":
+        usable = [d for d in usable if d["is_emulator"]]
+    elif device_mode == "physical":
+        usable = [d for d in usable if not d["is_emulator"]]
     if not usable:
-        return ("fail", "未检测到可用 Android 测试设备", [
-            "可连接实体手机并开启 USB 调试，或启动一个可用的 Android 模拟器",
-            "设备连接后请保持亮屏并解锁，市场客户端才能进行 UI 查询",
-        ])
+        label = ("Android 模拟器" if device_mode == "emulator" else
+                 "实体 Android 手机" if device_mode == "physical" else
+                 "Android 测试设备")
+        selected_is_emulator = device_mode == "emulator"
+        selected_candidates = [d for d in devices
+                               if d["is_emulator"] == selected_is_emulator]
+        other_kind = "物理机" if selected_is_emulator else "模拟器"
+        other = [d for d in devices
+                 if d["is_emulator"] != selected_is_emulator]
+
+        def device_note(device):
+            kind = "模拟器" if device["is_emulator"] else "物理机"
+            if device["state"] == "unauthorized":
+                state = "未授权 USB 调试"
+            elif device["state"] == "offline":
+                state = "离线"
+            else:
+                state = device["state"]
+            return f"{kind} {device['serial']}（{state}）"
+
+        selected_notes = [device_note(d) for d in selected_candidates
+                          if d["state"] != "device"]
+        other_notes = [device_note(d) for d in other]
+        detail = f"未检测到已选择的{label}"
+        if selected_notes:
+            detail += f"；已发现所选类型设备但不可用：{'、'.join(selected_notes)}"
+        if other_notes:
+            detail += f"；已发现未选择的{other_kind}：{'、'.join(other_notes)}"
+        actions = [
+            f"当前选择的是{label}，请连接符合选择的设备并确保 ADB 状态为 device",
+        ]
+        if other_notes:
+            actions.append(f"如需使用已发现的{other_kind}，请在页面切换设备类型后重新检测")
+        if not selected_notes:
+            actions.append("设备连接后请保持亮屏并解锁，市场客户端才能进行 UI 查询")
+        return ("fail", detail, actions)
     summary = []
     ok_any = False
     for device in usable:
@@ -188,10 +340,15 @@ def check_runtime_storage():
 
 def run_all(cfg=None):
     """检测 Android 市场客户端复核所需环境，不混入桌面 APK 解析。"""
+    try:
+        from config import device_mode as configured_device_mode
+        selected_mode = configured_device_mode(cfg or {})
+    except Exception:
+        selected_mode = "emulator"
     checks = [
         ("Python 依赖", check_deps),
         ("ADB 工具", check_adb),
-        ("Android 测试设备", check_usb_phone),
+        ("Android 测试设备", lambda: check_usb_phone(selected_mode)),
     ]
     results = []
     for step, (name, fn) in enumerate(checks, 1):

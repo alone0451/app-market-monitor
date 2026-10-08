@@ -3,6 +3,8 @@ import json
 import re
 import threading
 import calendar
+import multiprocessing
+import queue
 from datetime import datetime, timezone
 
 import core.db as db
@@ -12,6 +14,70 @@ from core.download_policy import decide_download
 from core.version import version_key
 
 _check_lock = threading.Lock()
+
+# Android 市场客户端依赖 ADB/UI 自动化。某些客户端在地区页、浏览器桥接
+# 或 uiautomator 无响应时可能长时间阻塞；把这类采集隔离到可终止的子进程，
+# 避免一个渠道拖住整轮巡检和“开始巡检”后的报表状态。
+_DEVICE_ADAPTERS = {"oppo", "vivo", "honor"}
+_DEVICE_COLLECT_TIMEOUT = 75
+
+
+def _collect_in_child(adapter: str, kwargs: dict, result_queue):
+    """子进程入口：仅返回可序列化的采集结果，不写巡检数据库。"""
+    try:
+        collector = get_collector(adapter)
+        if adapter == "baidu":
+            from collectors.device_markets import get_device_fallback_collector
+            collector = get_device_fallback_collector("baidu")
+        if collector is None:
+            result_queue.put({"ok": False, "error": "采集器不存在"})
+            return
+        result = collector.collect(**kwargs)
+        result_queue.put({
+            "ok": True,
+            "result": {
+                "version_name": result.version_name,
+                "version_code": result.version_code,
+                "status": result.status,
+                "detail": result.detail,
+                "extra": result.extra or {},
+            },
+        })
+    except BaseException as exc:  # 子进程边界必须把异常转回父进程
+        result_queue.put({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+
+
+def _collect_device_isolated(adapter: str, kwargs: dict, timeout: int = _DEVICE_COLLECT_TIMEOUT):
+    """执行设备端渠道采集并设置硬超时，防止 UI 自动化无限等待。"""
+    from collectors import CollectResult, ST_ERROR
+
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue()
+    process = context.Process(target=_collect_in_child,
+                              args=(adapter, kwargs, result_queue), daemon=True)
+    process.start()
+    process.join(max(10, int(timeout)))
+    if process.is_alive():
+        process.terminate()
+        process.join(3)
+        return CollectResult(
+            status=ST_ERROR,
+            detail=f"{adapter} Android 客户端采集超过 {int(timeout)} 秒，已超时结束本渠道；其余渠道继续巡检",
+        )
+    try:
+        # 子进程退出后 Queue feeder 仍可能需要很短时间刷新消息。
+        payload = result_queue.get(timeout=2)
+    except queue.Empty:
+        payload = {"ok": False, "error": f"{adapter} 客户端进程未返回结果"}
+    finally:
+        result_queue.close()
+        result_queue.join_thread()
+    if not payload.get("ok"):
+        return CollectResult(
+            status=ST_ERROR,
+            detail=f"{adapter} Android 客户端采集失败：{payload.get('error') or '未知错误'}",
+        )
+    return CollectResult(**payload["result"])
 
 
 def _now():
@@ -79,6 +145,32 @@ def run_check(trigger: str = "manual", app_ids=None, market_ids=None):
     返回 check_runs.id；巡检在后台线程执行，页面轮询进度。"""
     if not _check_lock.acquire(blocking=False):
         raise RuntimeError("已有巡检任务在执行中")
+    # 在创建后台任务前验证本轮确实有可匹配的 App×渠道，避免“空任务”
+    # 立即跳到报表，看起来像没有开始巡检（例如只选了 Android 渠道却
+    # 新增了 iOS App，或前端页面状态尚未同步）。
+    if app_ids is not None:
+        if not app_ids:
+            scoped_apps = []
+        else:
+            scoped_apps = db.query(
+                "SELECT id, platform FROM apps WHERE id IN ({})".format(",".join("?" * len(app_ids))),
+                app_ids,
+            )
+    else:
+        scoped_apps = db.query(
+            """SELECT id, platform FROM apps
+               WHERE (platform='android' AND (COALESCE(package_name,'')<>''
+                      OR COALESCE(search_keywords,'')<>''))
+                  OR (platform='ios' AND (COALESCE(ios_bundle_id,'')<>''
+                      OR COALESCE(ios_app_id,'')<>''))"""
+        )
+    scoped_markets = db.query("SELECT id, platform FROM markets WHERE enabled=1")
+    if market_ids:
+        scoped_markets = [m for m in scoped_markets if m["id"] in market_ids]
+    if not any(m["platform"] == a["platform"]
+               for m in scoped_markets for a in scoped_apps):
+        _check_lock.release()
+        raise RuntimeError("当前选择没有可巡检项，请确认 App 身份和同平台应用市场范围")
     run_id = db.execute(
         "INSERT INTO check_runs (trigger, started_at, status) VALUES (?,?, 'running')",
         (trigger, _now()),
@@ -90,10 +182,13 @@ def run_check(trigger: str = "manual", app_ids=None, market_ids=None):
         try:
             cfg = load_config()
             http_cfg = cfg.get("http", {})
-            if app_ids:
-                apps = db.query(
-                    "SELECT * FROM apps WHERE id IN ({})".format(",".join("?" * len(app_ids))), app_ids,
-                )
+            if app_ids is not None:
+                if not app_ids:
+                    apps = []
+                else:
+                    apps = db.query(
+                        "SELECT * FROM apps WHERE id IN ({})".format(",".join("?" * len(app_ids))), app_ids,
+                    )
             else:
                 # 定时/全量巡检跳过尚未确认具体身份的名称占位项。
                 apps = db.query(
@@ -117,6 +212,12 @@ def run_check(trigger: str = "manual", app_ids=None, market_ids=None):
                 for app in apps:
                     if m["platform"] != app["platform"]:
                         continue
+                    summary["current"] = {
+                        "market": m["id"], "market_name": m["name"],
+                        "app": app["id"], "app_name": app["app_name"],
+                    }
+                    db.execute("UPDATE check_runs SET summary_json=? WHERE id=?",
+                               (json.dumps(summary, ensure_ascii=False), run_id))
                     res = None
                     try:
                         market_app_id = _binding_app_id(m["id"], app["id"]) or m["app_id"]
@@ -146,7 +247,9 @@ def run_check(trigger: str = "manual", app_ids=None, market_ids=None):
                             device_res = None
                             if device_report.get("ready") and baidu_market.get("installed"):
                                 device_collector = get_device_fallback_collector("baidu")
-                                device_res = device_collector.collect(**collect_kwargs) if device_collector else None
+                                device_res = (_collect_device_isolated(
+                                    "baidu", collect_kwargs,
+                                ) if device_collector else None)
                             if device_res and device_res.status == "ok" and device_res.version_name:
                                 device_res.detail = (
                                     "已使用已安装并完成初始化的百度手机助手客户端"
@@ -165,7 +268,12 @@ def run_check(trigger: str = "manual", app_ids=None, market_ids=None):
                                     )
                                 res = web_res
                         else:
-                            res = collector.collect(**collect_kwargs)
+                            if m["adapter"] in _DEVICE_ADAPTERS:
+                                res = _collect_device_isolated(
+                                    m["adapter"], collect_kwargs,
+                                )
+                            else:
+                                res = collector.collect(**collect_kwargs)
                     except Exception as e:  # 采集器自身异常兜底
                         from collectors import CollectResult, ST_ERROR
                         res = CollectResult(status=ST_ERROR, detail=f"异常: {e!r}")
@@ -278,6 +386,7 @@ def run_check(trigger: str = "manual", app_ids=None, market_ids=None):
                          published_at, _now()),
                     )
                     summary["completed"] += 1
+                    summary.pop("current", None)
                     db.execute("UPDATE check_runs SET summary_json=? WHERE id=?",
                                (json.dumps(summary, ensure_ascii=False), run_id))
 

@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 import core.db as db
-from config import market_display_name
+from config import device_mode as configured_device_mode, load_config, market_display_name
 from .adb_device import AdbDevice
 from .markets import get_device_driver
 
@@ -42,8 +42,10 @@ _VERSION_RE = re.compile(r"(?:^|[\s>])(v?)(\d+(?:\.\d+){1,3})(?:$|[\s<])")
 
 
 class DeviceExecutor:
-    def __init__(self, serial: str = ""):
-        self.dev = AdbDevice(serial)
+    def __init__(self, serial: str = "", device_mode: str = ""):
+        selected_mode = device_mode or configured_device_mode(load_config())
+        self.device_mode = selected_mode
+        self.dev = AdbDevice(serial, device_mode=selected_mode)
 
     def check_ready(self) -> tuple[bool, str]:
         report = self.compatibility_report()
@@ -201,10 +203,19 @@ class DeviceExecutor:
             return {"ok": False, "status": "need_review", "detail": "该市场客户端暂无初始化适配器"}
 
         self.dev.start_app(package_name)
-        nodes = driver._wait_for_nodes(package=package_name)
+        # vivo's first launch can briefly render a stale regional splash while
+        # its service configuration is loading.  Give it a little longer and
+        # retry that screen instead of turning a transient state into a
+        # permanent channel failure.
+        if market_id == "vivo":
+            time.sleep(4)
+        nodes = driver._wait_for_nodes(package=package_name,
+                                       attempts=10 if market_id == "vivo" else 8,
+                                       delay=1.5)
         before = ""
         after = ""
         setup_actions = []
+        region_retries = 0
         for _ in range(5):
             page = driver._page_text(nodes).lower()
             if any(phrase in page for phrase in (
@@ -213,9 +224,19 @@ class DeviceExecutor:
                 "当前地区不可用", "当前区域不可用", "本地区暂未提供服务",
                 "本区域暂未提供服务", "服务区域不可用", "暂未提供服务",
             )):
+                if market_id == "vivo" and region_retries < 2:
+                    region_retries += 1
+                    self.dev.shell(f"am force-stop {package_name}")
+                    time.sleep(2)
+                    self.dev.start_app(package_name)
+                    time.sleep(4)
+                    nodes = driver._wait_for_nodes(package=package_name,
+                                                   attempts=6, delay=1.5)
+                    continue
                 shot = driver._capture(screenshot_dir)
                 return {"ok": False, "status": "region_unavailable", "screenshot": shot,
-                        **identity, "detail": f"{market_display_name(market_id)}在当前模拟器地区不可用，无法打开市场详情"}
+                        **identity, "detail": (f"{market_display_name(market_id)}连续重试后仍显示当前模拟器地区不可用，"
+                                                "无法打开市场详情")}
             gate, action, gate_detail = driver.consent_gate(nodes)
             if gate:
                 if action is None:
@@ -242,8 +263,14 @@ class DeviceExecutor:
             # one-time bootstrap, so allow only an unambiguous allow/deny sheet
             # owned by the market client; never grant permissions via pm grant.
             permission_words = ("permission", "permissions", "allow", "deny",
-                                "权限", "应用列表", "通知", "相机", "存储")
-            if any(word in page for word in permission_words):
+                                "权限", "允许", "拒绝", "应用列表", "通知", "相机",
+                                "存储", "通讯录", "电话", "位置", "附近设备")
+            page_packages = {node.get("package") for node in nodes if node.get("package")}
+            system_permission_page = bool(page_packages & {
+                "com.android.permissioncontroller",
+                "com.google.android.permissioncontroller",
+            })
+            if system_permission_page or any(word in page for word in permission_words):
                 permission = driver._best_node(
                     nodes, text_words=("允许", "Allow", "同意", "Agree", "继续", "Continue"),
                     id_words=("permit", "allow", "agree", "continue"),

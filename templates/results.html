@@ -13,7 +13,7 @@
   <div class="stat {% if stats.suspicious %}bad{% endif %}"><div class="n">{{ stats.suspicious }}</div><div class="l">高风险 / 严重风险项</div></div>
 </div>
 
-<div id="run-progress" class="callout" style="display:none;margin-top:14px"><b>正在巡检</b><div id="run-progress-text" class="small">准备查询应用市场…</div></div>
+<div id="run-progress" class="callout" style="display:{% if run_id %}block{% else %}none{% endif %};margin-top:14px"><b>{% if run_id %}巡检任务已启动{% else %}正在巡检{% endif %}</b><div id="run-progress-text" class="small">{% if run_id %}正在读取任务进度…（任务编号 {{ run_id }}）{% else %}准备查询应用市场…{% endif %}</div></div>
 
 {% if not apps %}
 <section class="card empty"><b>还没有可生成报表的监测对象</b><span>请先配置 App 名称或公司名称。</span><div style="margin-top:15px"><a class="btn" href="/config">前往监测配置</a></div></section>
@@ -40,7 +40,7 @@
         <td><b>{{ m.name }}</b><div class="small">{% if m.platform=='ios' %}iOS{% else %}Android{% endif %} · {% if m.id=='baidu' %}Android 测试设备优先 · 网页备用{% elif m.adapter in ('huawei','xiaomi','yyb','samsung','meizu','appstore','qihu360') %}网页自动采集{% else %}Android 测试设备客户端采集{% endif %}</div></td>
         <td>{% if r and r.status in ('ok','fallback_ok') %}<b style="font-size:15px">{{ r.version_name or '—' }}</b>{% if r.version_code %}<div class="small">版本代码 {{ r.version_code }}</div>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
         <td style="white-space:nowrap">{% if r and r.status in ('ok','fallback_ok') %}<span>{{ r.published_at or '市场未提供' }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
-        <td>{% if r and r.status in ('ok','fallback_ok') %}
+        <td>{% if r and (r.status in ('ok','fallback_ok') or r.developer_name or r.operator_name) %}
           <div class="small"><b>开发者/发布者：</b>{{ r.developer_name or '市场未提供' }}</div>
           <div class="small" style="margin-top:4px"><b>运营者/主办者：</b>{{ r.operator_name or '市场未提供' }}</div>
           {% else %}<span class="muted">—</span>{% endif %}</td>
@@ -115,11 +115,20 @@ function pollRun(id,options={}){
         if(s.save_dir)text.textContent+=`（电脑保存目录：${s.save_dir}）`;
         if(options.inline)options.inline.textContent=text.textContent;
       }else{
+        const current=s.current;
+        const where=current
+          ? `当前：${current.market_name||current.market||'应用市场'} · ${current.app_name||'目标应用'}`
+          : '';
         text.textContent=options.single
           ? `正在单独查询 ${options.marketName||'该渠道'}…`
-          : `已完成 ${s.completed||0} / ${s.total||0} 个渠道查询`;
+          : `已完成 ${s.completed||0} / ${s.total||0} 个渠道查询${where?'；'+where:''}`;
       }
       setTimeout(()=>pollRun(id,options),1200);return;
+    }
+    if(d.run.status==='failed'){
+      box.querySelector('b').textContent='巡检任务失败';
+      text.textContent=s.error||'后台任务异常结束，请查看服务器日志或重新启动巡检';
+      return;
     }
     if(options.artifact){
       const item=(s.items||[])[0]||{};

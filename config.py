@@ -44,6 +44,18 @@ PACKAGE_READY_MARKETS = {
 # device-side adapter can operate. Baidu uses the client as the preferred local
 # evidence path when installed; its consent gate is tracked separately.
 DEVICE_READY_MARKETS = {"oppo", "vivo", "honor", "baidu"}
+DEVICE_MODES = {"emulator", "physical"}
+
+
+def device_mode(cfg: dict | None = None) -> str:
+    """Return the configured Android device type for client-side checks.
+
+    The default is deliberately emulator-only.  A physical phone is selected
+    only after the user explicitly chooses it in the web UI.
+    """
+    current = cfg if cfg is not None else load_config()
+    selected = str((current.get("device") or {}).get("mode") or "emulator").strip().lower()
+    return selected if selected in DEVICE_MODES else "emulator"
 
 
 def load_config() -> dict:

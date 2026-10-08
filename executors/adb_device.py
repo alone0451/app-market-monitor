@@ -18,24 +18,24 @@ def _run(cmd, timeout=30):
 
 
 class AdbDevice:
-    def __init__(self, serial: str = ""):
+    def __init__(self, serial: str = "", device_mode: str = "emulator"):
         self.adb = find_adb()[0] or "adb"
+        self.device_mode = device_mode if device_mode in ("emulator", "physical") else "emulator"
         self.serial = serial or self._pick()
 
     def _pick(self) -> str:
         code, out = _run([self.adb, "devices"])
         devices = [d for d in parse_adb_devices(out) if d["state"] == "device"]
+        wanted_emulator = self.device_mode == "emulator"
         for device in devices:
-            if not device["is_emulator"]:
-                return device["serial"]
-        for device in devices:
-            if device["is_emulator"]:
+            if device["is_emulator"] == wanted_emulator:
                 return device["serial"]
         return ""
 
     def ready(self) -> tuple[bool, str]:
         if not self.serial:
-            return False, "未检测到可用 Android 设备（实体手机或模拟器）"
+            label = "Android 模拟器" if self.device_mode == "emulator" else "实体 Android 手机"
+            return False, f"未检测到已选择的{label}"
         code, out = _run([self.adb, "-s", self.serial, "shell", "echo", "ok"])
         return ("ok" in out), f"设备 {self.serial}"
 

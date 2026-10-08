@@ -25,6 +25,7 @@ from core.artifacts import (_device_extract_artifact, _download_with_resume,
                             _find_cached_artifact, _fresh_collect)
 from executors.markets.yyb import _ocr_version, _pinyin_query
 from executors.markets.generic import (GenericStoreDriver, OppoDeviceDriver,
+                                       VivoDeviceDriver,
                                        find_company_name, parse_entities,
                                        parse_published_at, parse_version)
 from executors.device import DeviceExecutor
@@ -704,6 +705,41 @@ adb: failed to check server version: cannot connect to daemon
         self.assertIn("模拟器 emulator-5554", message)
         self.assertEqual([], actions)
 
+    @patch("core.env_check._run")
+    @patch("core.env_check.find_adb", return_value=("/usr/local/bin/adb", "test"))
+    def test_physical_mode_ignores_connected_emulator(self, _find, run):
+        run.return_value = (0, "List of devices attached\n"
+                            "emulator-5554 device product:sdk_phone_arm64 "
+                            "model:Android_SDK device:generic_arm64\n"
+                            "ABC123 device product:venus model:Phone device:venus\n")
+        status, message, actions = check_usb_phone("physical")
+        self.assertEqual("ok", status)
+        self.assertIn("实体手机 ABC123", message)
+        self.assertNotIn("模拟器", message)
+        self.assertEqual([], actions)
+
+    @patch("core.env_check._run")
+    @patch("core.env_check.find_adb", return_value=("/usr/local/bin/adb", "test"))
+    def test_selected_physical_mode_reports_available_emulator(self, _find, run):
+        run.return_value = (0, "List of devices attached\n"
+                            "emulator-5554 device product:sdk_phone_arm64 "
+                            "model:Android_SDK device:generic_arm64\n")
+        status, message, actions = check_usb_phone("physical")
+        self.assertEqual("fail", status)
+        self.assertIn("已发现未选择的模拟器：模拟器 emulator-5554", message)
+        self.assertIn("切换设备类型", "；".join(actions))
+
+    @patch("executors.adb_device._run")
+    @patch("executors.adb_device.find_adb", return_value=("/usr/local/bin/adb", "test"))
+    def test_adb_device_mode_selects_only_requested_kind(self, _find, run):
+        run.return_value = (0, "List of devices attached\n"
+                            "emulator-5554 device product:sdk_phone_arm64 "
+                            "model:Android_SDK device:generic_arm64\n"
+                            "ABC123 device product:venus model:Phone device:venus\n")
+        from executors.adb_device import AdbDevice
+        self.assertEqual("emulator-5554", AdbDevice(device_mode="emulator").serial)
+        self.assertEqual("ABC123", AdbDevice(device_mode="physical").serial)
+
 
 class YybDeviceDriverTests(unittest.TestCase):
     def test_ascii_query_is_preserved(self):
@@ -719,6 +755,21 @@ class YybDeviceDriverTests(unittest.TestCase):
 
 
 class GenericDeviceDriverTests(unittest.TestCase):
+    def test_consent_gate_prefers_action_over_clickable_policy_text(self):
+        driver = OppoDeviceDriver(MagicMock())
+        nodes = [
+            {"text": "请阅读 vivo隐私政策。点击“立即开启”，即表示您已阅读并同意vivo隐私政策。",
+             "desc": "", "rid": "wlan_choose_page_privacy_policy_tv",
+             "class": "android.widget.TextView", "clickable": True, "enabled": True,
+             "bounds": [142, 1835, 938, 1941], "cx": 540, "cy": 1888},
+            {"text": "立即开启", "desc": "", "rid": "wlan_choose_page_btn",
+             "class": "android.widget.TextView", "clickable": True, "enabled": True,
+             "bounds": [316, 2079, 764, 2179], "cx": 540, "cy": 2129},
+        ]
+        gate, action, _ = driver.consent_gate(nodes)
+        self.assertTrue(gate)
+        self.assertEqual("立即开启", action["text"])
+
     def test_version_parser_requires_version_context(self):
         self.assertEqual("8.2.40", parse_version(["应用信息", "版本号：8.2.40", "更新日期 2026.08.06"]))
         self.assertEqual("", parse_version(["更新日期", "2026.08.06", "下载 3.2.1 万次"]))
@@ -771,6 +822,55 @@ class GenericDeviceDriverTests(unittest.TestCase):
         self.assertIsNone(driver._read_opened_detail(
             "com.example.finance", "示例金融", "data/screenshots", nodes,
         ))
+
+    @patch("executors.markets.generic.time.sleep", return_value=None)
+    def test_vivo_keeps_developer_and_marks_missing_operator(self, _sleep):
+        device = MagicMock()
+        device.screenshot.return_value = False
+        nodes = [
+            {"package": "com.bbk.appstore", "text": "示例金融", "desc": ""},
+            {"package": "com.bbk.appstore", "text": "版本：8.2.40", "desc": ""},
+            {"package": "com.bbk.appstore", "text": "开发者：示例科技有限公司", "desc": ""},
+        ]
+        result = VivoDeviceDriver(device)._read_opened_detail(
+            "com.example.finance", "示例金融", "data/screenshots", nodes,
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual("示例科技有限公司", result["developer"])
+        self.assertEqual("", result["operator"])
+        self.assertIn("运营者/主办者：市场未提供", result["detail"])
+
+    @patch("executors.markets.generic._ocr_entities",
+           return_value=({"developer": "示例 OCR 有限公司", "operator": ""}, ""))
+    @patch("executors.markets.generic.time.sleep", return_value=None)
+    def test_vivo_uses_ocr_for_missing_developer(self, _sleep, _ocr):
+        device = MagicMock()
+        device.screenshot.return_value = True
+        nodes = [
+            {"package": "com.bbk.appstore", "text": "示例金融", "desc": ""},
+            {"package": "com.bbk.appstore", "text": "版本：8.2.40", "desc": ""},
+        ]
+        result = VivoDeviceDriver(device)._read_opened_detail(
+            "com.example.finance", "示例金融", "data/screenshots", nodes,
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual("示例 OCR 有限公司", result["developer"])
+        self.assertIn("运营者/主办者：市场未提供", result["detail"])
+
+    @patch("executors.markets.generic.time.sleep", return_value=None)
+    def test_vivo_marks_both_entities_when_market_does_not_expose_them(self, _sleep):
+        device = MagicMock()
+        device.screenshot.return_value = False
+        nodes = [
+            {"package": "com.bbk.appstore", "text": "示例金融", "desc": ""},
+            {"package": "com.bbk.appstore", "text": "版本：8.2.40", "desc": ""},
+        ]
+        result = VivoDeviceDriver(device)._read_opened_detail(
+            "com.example.finance", "示例金融", "data/screenshots", nodes,
+        )
+        self.assertTrue(result["ok"])
+        self.assertIn("开发者/发布者：市场未提供", result["detail"])
+        self.assertIn("运营者/主办者：市场未提供", result["detail"])
 
     @patch("executors.markets.generic.time.sleep", return_value=None)
     def test_oppo_reads_about_app_after_stable_detail_toggle(self, _sleep):
@@ -1147,11 +1247,14 @@ class DatabaseMigrationTests(unittest.TestCase):
 class AppApiTests(unittest.TestCase):
     def test_scheduled_monitoring_is_disabled_and_usb_tool_has_narrow_scope(self):
         import core.db as db
+        import config as config_module
         from app import app
         old_path = db.DB_PATH
+        old_config_path = config_module.CONFIG_PATH
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 db.DB_PATH = Path(tmp) / "monitor.db"
+                config_module.CONFIG_PATH = Path(tmp) / "config.yaml"
                 db.init_db()
                 client = app.test_client()
                 page = client.get("/config").get_data(as_text=True)
@@ -1164,11 +1267,30 @@ class AppApiTests(unittest.TestCase):
                 self.assertEqual(410, disabled.status_code)
                 self.assertFalse(disabled.get_json()["ok"])
                 self.assertEqual(
-                    {"scheduled_monitoring": False},
+                    {"scheduled_monitoring": False, "device_mode": "emulator"},
                     client.get("/api/config").get_json(),
                 )
         finally:
             db.DB_PATH = old_path
+            config_module.CONFIG_PATH = old_config_path
+
+    def test_device_mode_can_be_saved_and_is_returned_by_config_api(self):
+        import config as config_module
+        from app import app
+        old_path = config_module.CONFIG_PATH
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                config_module.CONFIG_PATH = Path(tmp) / "config.yaml"
+                client = app.test_client()
+                self.assertEqual("emulator", client.get("/api/device/mode").get_json()["device_mode"])
+                saved = client.post("/api/device/mode", json={"device_mode": "physical"})
+                self.assertEqual(200, saved.status_code)
+                self.assertEqual("physical", saved.get_json()["device_mode"])
+                self.assertEqual("physical", client.get("/api/config").get_json()["device_mode"])
+                invalid = client.post("/api/device/mode", json={"device_mode": "tablet"})
+                self.assertEqual(400, invalid.status_code)
+        finally:
+            config_module.CONFIG_PATH = old_path
 
     @patch("executors.device.DeviceExecutor.compatibility_report")
     @patch("core.env_check.run_all")
@@ -1219,6 +1341,12 @@ class AppApiTests(unittest.TestCase):
                 results_page = client.get('/results').get_data(as_text=True)
                 self.assertIn('>按当前配置重新巡检</button>', results_page)
                 self.assertIn('不会清空监测清单', results_page)
+                self.assertIn('function marketCheckboxes()', config_page)
+                self.assertIn('marketCheckboxes().map(x=>({id:x.dataset.market,enabled:x.checked}))', config_page)
+                running_page = client.get('/results?run=42').get_data(as_text=True)
+                self.assertIn('巡检任务已启动', running_page)
+                self.assertIn('任务编号 42', running_page)
+                self.assertIn("const runId=new URLSearchParams(location.search).get('run');if(runId)pollRun(runId);", running_page)
         finally:
             db.DB_PATH = old_path
 
